@@ -51,20 +51,47 @@ from 2025-2026. If they're missing, remove the four `sram_` calls in
 
 ## Controls (controller 1)
 
-|N64|SNES / Super Metroid|
+Default buttons (all of them can be changed in the N64 menu):
+
+|N64|Action|
 |-|-|
-|A|A: jump|
-|B|X: shoot|
-|C-down|B: dash|
-|C-left|Y: item cancel|
-|Z or C-right|Select: item select|
-|L / R|L / R: aim|
-|Start|Start|
-|D-pad or stick|D-pad|
-|C-up|performance overlay on / off (not sent to the game)|
-|L + C-up|2.5D look on / off (see below; on by default)|
-|R + C-up|50 / 60 Hz picture on a PAL console (see below); press A within 10 s to keep 60 Hz|
-|L + R + C-up|low-poly 2.5D characters on / off (see below; on by default)|
+|A|jump|
+|B|shoot|
+|C-down|dash|
+|C-left|item cancel|
+|Z or C-right|item select|
+|R / L|aim up / aim down|
+|C-up|nothing (free to assign)|
+|Start|pause / game menu|
+|D-pad or stick|move|
+|**L + R + Z**|**N64 menu** (pauses the game)|
+|**L + R + C-up**|**low-poly 2.5D characters on / off** (a shortcut; the menu also has it)|
+
+### N64 menu (L + R + Z)
+
+A panel over the paused game. **A** opens a page or changes a line, **B** goes
+back a page (on the main page: leave without saving), **Start** saves and
+leaves from any page.
+
+* **CONTROLLER MAPPING >**: A, B, Z, L, R and all four C buttons, each set to
+  SHOT, JUMP, DASH, ITEM CANCEL, ITEM SELECT, AIM UP, AIM DOWN or nothing
+  (Left / Right or A changes it), plus DEFAULT BUTTONS. Several buttons may do
+  the same action. An action presses the button the game's own CONTROLLER
+  SETTING MODE has for it, so both settings work together.
+* **SCREEN COLOURS >**: every colour filter in a list (off, brighter, darker,
+  vivid colours, warm CRT tint, sepia, Game Boy green, greyscale, high
+  contrast); A picks one, marked with `*`. (The paused picture behind the
+  menu keeps its colours; the new ones show once the game runs again.)
+  Left / Right on the main page also steps through them.
+* **2.5D CHARACTERS** on / off (also L + R + C-up during play).
+* **SPEED OVERLAY** (the top border) on / off, and **PICTURE** 50 / 60 Hz on
+  any console (the rate that isn't the console's own must be kept with A
+  within 10 seconds, in case the TV can't show it; see "50 / 60 Hz picture").
+
+The settings are kept in the cartridge's save memory (SRAM, after the game's
+own 8 KB), so they survive switching off. The menu replaces the old C-up
+button combinations except L + R + C-up, so C-up alone is free for the game
+(while L and R are both held, C-up and Z go to the shortcuts, not the game).
 
 ## What I changed from upstream
 
@@ -188,7 +215,7 @@ aligned for RSP DMA. Fixed.
 
 ### Overlay
 
-Top border, C-up toggles it, updated every second. It also goes to `debugf`
+Top border, on or off in the N64 menu (SPEED OVERLAY), updated every second. It also goes to `debugf`
 (UNFLoader `-d`, ares console):
 
 `FPS<shown/s> GAME<logic steps/s> L<logic ms> C<capture ms> W<wait ms> S<sound ms> P<picture ms>`
@@ -281,15 +308,23 @@ values on 1,000 captured frames (224,000 lines): 0 different. The picture
 itself is unchanged (RSP vs C reference: 0 different lines; the in-emulator
 self-check build switches the effect off and still reports 0 bad lines).
 
-### 60 Hz mode
+### 50 / 60 Hz picture
 
-A PAL console sends 50 pictures a second to the TV. R + C-up switches it to
-60 Hz (libdragon's PAL60 timing: the PAL colour signal at the NTSC frame
-rate), which most CRTs and many TVs and upscalers accept. Because some don't,
-the switch is on trial: the top border shows "60 Hz: press A to keep it" with
-a countdown, and without A it goes back to 50 Hz after 10 seconds. R + C-up
-again returns to 50 Hz. NTSC consoles are 60 Hz already. To start in 60 Hz
+A PAL console sends 50 pictures a second to the TV, an NTSC (or M-PAL)
+console 60. The N64 menu's PICTURE line switches to the other rate on any
+console: a PAL console to 60 Hz (libdragon's PAL60 timing: the PAL colour
+signal at the NTSC frame rate), an NTSC console to 50 Hz (the PAL timing with
+NTSC colours). Most CRTs, TVs, upscalers and emulators accept both, but some
+older TVs don't, so a switch away from the console's own rate is on trial:
+the top border shows "60 Hz: press A to keep it" (or 50 Hz) with a countdown,
+and without A it goes back after 10 seconds. To start a PAL console at 60 Hz
 every time, build with `make TEST_FLAGS=-DFORCE_PAL60` (no confirmation).
+
+Which is better for play: 60 Hz. The game makes 60 steps a second either way
+(same speed, same physics); at 60 Hz every step gets its own picture, so
+motion is smoothest. At 50 Hz each picture has more time to be drawn (20 ms
+instead of 16.7), so heavy rooms hold their full rate more easily, but some
+pictures show two steps, which makes scrolling a little uneven.
 
 The game always runs at its own 60 steps per second; at 60 Hz that is one
 step per picture, so motion is smoother. A picture now has 16.7 ms instead
@@ -347,7 +382,7 @@ Only the characters gain depth: each one is built from its own 2D sprite as a
 stack of textured layers with thickness, turned slightly and seen a little
 from above, so it looks like a chunky low-poly model standing in the 2D world.
 
-On by default during gameplay; L + R + C-up switches it off and on. The
+On by default during gameplay; the N64 menu (2.5D CHARACTERS) switches it off and on. The
 player, the enemies and the bosses are drawn with depth over the normal
 picture, by the RDP, while the backgrounds, the HUD, items, shots and effects
 stay 2D.
@@ -428,6 +463,10 @@ over her sprites' (priority-1 tiles over priority-2 sprites; every BG1 / BG2
 tile over priority 0-1), and the sprites written to OAM before hers (lower
 entries are in front), such as the gunship when she gets out of it on landing.
 `sm_90.c` reports her first OAM entry (`LowPoly_NoteHeroOamFirst`).
+The pieces' pixels are copied from the finished picture just before the 3D
+is drawn on it (the tiles only decide which pixels), so they keep whatever
+colour math the room applies (rain, fog, water); rebuilt from the tiles'
+own colours they showed as a darker box around her feet in such rooms.
 * **Colour window per pixel on the RSP (Ceres explosion, power bombs).** Lines
 where colour math happens only inside (or only outside) a colour window that
 changes along the line used to be drawn by the CPU's generic renderer: the

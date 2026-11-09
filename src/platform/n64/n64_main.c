@@ -266,25 +266,67 @@ enum {
   kSnes_A = 1 << 8, kSnes_X = 1 << 9, kSnes_L = 1 << 10, kSnes_R = 1 << 11,
 };
 
-// Super Metroid default controls: A jump, X shoot, B dash, Y item cancel,
-// Select item select, L/R aim.
+// N64 buttons are set per action in the N64 menu (L + R + Z), all four C
+// buttons included. An action presses the SNES button the game's own
+// Controller Setting has for it (RAM 0x9B2..), so both settings work together.
+enum { kN64_A, kN64_B, kN64_Z, kN64_L, kN64_R, kN64_CU, kN64_CD, kN64_CL, kN64_CR, kN64_Count };
+enum { kAct_None, kAct_Shot, kAct_Jump, kAct_Dash, kAct_Cancel, kAct_Select, kAct_AimUp, kAct_AimDown, kAct_Count };
+static const char *const kN64Name[kN64_Count] = { "A", "B", "Z", "L", "R", "C-UP", "C-DOWN", "C-LEFT", "C-RIGHT" };
+static const char *const kActName[kAct_Count] = { "-", "SHOT", "JUMP", "DASH", "ITEM CANCEL", "ITEM SELECT", "AIM UP", "AIM DOWN" };
+static const uint8_t kDefaultMap[kN64_Count] = {
+  kAct_Jump, kAct_Shot, kAct_Select, kAct_AimDown, kAct_AimUp, kAct_None, kAct_Dash, kAct_Cancel, kAct_Select };
+
+// Settings kept in cartridge SRAM after the game's 8 KB (at 0x6000).
+#define N64CFG_ADR 0x6000
+typedef struct {
+  char magic[4];                         // "SMN1"
+  uint8_t map[kN64_Count];               // action of each N64 button
+  uint8_t lowpoly, cf, perf;
+  uint8_t sum;                           // simple checksum of the bytes before it
+} N64Cfg;
+static N64Cfg g_cfg = { { 'S', 'M', 'N', '1' }, { 0 }, 1, 0, 1, 0 };
+static bool g_show_perf = true;          // speed overlay in the top border
+static bool g_input_hold;                // after the menu: no game input until every button is released
+
+extern uint8_t g_ram[];
+// The SNES button (RtlRunFrame's layout) the game uses for an action now.
+static int ActionSnes(int act) {
+  static const uint16_t kAdr[kAct_Count] = { 0, 0x9B2, 0x9B4, 0x9B6, 0x9B8, 0x9BA, 0x9BE, 0x9BC };
+  static const uint16_t kDef[kAct_Count] = { 0, 0x0040, 0x0080, 0x8000, 0x4000, 0x2000, 0x0010, 0x0020 };
+  if (act <= kAct_None || act >= kAct_Count) return 0;
+  uint16_t g = g_ram[kAdr[act]] | g_ram[kAdr[act] + 1] << 8;   // (SNES joypad format, little-endian RAM)
+  if (!g) g = kDef[act];                                       // (before the game sets its controls)
+  int r = 0;
+  if (g & 0x8000) r |= kSnes_B;
+  if (g & 0x4000) r |= kSnes_Y;
+  if (g & 0x2000) r |= kSnes_Select;
+  if (g & 0x0080) r |= kSnes_A;
+  if (g & 0x0040) r |= kSnes_X;
+  if (g & 0x0020) r |= kSnes_L;
+  if (g & 0x0010) r |= kSnes_R;
+  return r;
+}
+
 static int ReadInputs(void) {
   joypad_poll();
   joypad_inputs_t in = joypad_get_inputs(JOYPAD_PORT_1);
+  const bool down[kN64_Count] = { (bool)in.btn.a, (bool)in.btn.b, (bool)in.btn.z, (bool)in.btn.l, (bool)in.btn.r,
+                                  (bool)in.btn.c_up, (bool)in.btn.c_down, (bool)in.btn.c_left, (bool)in.btn.c_right };
   int r = 0;
-  if (in.btn.a)       r |= kSnes_A;       // jump
-  if (in.btn.b)       r |= kSnes_X;       // shoot
-  if (in.btn.c_down)  r |= kSnes_B;       // dash
-  if (in.btn.c_left)  r |= kSnes_Y;       // item cancel
-  if (in.btn.z)       r |= kSnes_Select;  // item select
-  if (in.btn.c_right) r |= kSnes_Select;
-  if (in.btn.start)   r |= kSnes_Start;
-  if (in.btn.l)       r |= kSnes_L;
-  if (in.btn.r)       r |= kSnes_R;
+  for (int i = 0; i < kN64_Count; i++)
+    if (down[i] && !((i == kN64_CU || i == kN64_Z) && in.btn.l && in.btn.r)) r |= ActionSnes(g_cfg.map[i]);   // (L + R + C-up / Z: shortcuts)
+  if (in.btn.start) r |= kSnes_Start;
   if (in.btn.d_up    || in.stick_y >  40) r |= kSnes_Up;
   if (in.btn.d_down  || in.stick_y < -40) r |= kSnes_Down;
   if (in.btn.d_left  || in.stick_x < -40) r |= kSnes_Left;
   if (in.btn.d_right || in.stick_x >  40) r |= kSnes_Right;
+  if (g_input_hold) {                    // (the menu's last button press must not reach the game)
+    bool any = in.btn.a || in.btn.b || in.btn.z || in.btn.l || in.btn.r || in.btn.start || in.btn.c_up ||
+               in.btn.c_down || in.btn.c_left || in.btn.c_right || in.btn.d_up || in.btn.d_down ||
+               in.btn.d_left || in.btn.d_right;
+    if (any) return 0;
+    g_input_hold = false;
+  }
   return r;
 }
 
@@ -597,20 +639,178 @@ static void RspSelfCheck(const PpuFrame *f, surface_t *fb) {
 #endif
 
 // ---- 50 / 60 Hz ------------------------------------------------------------------
-// A PAL console normally shows 50 pictures a second. libdragon's PAL60 timing
-// makes it send a 60 Hz signal instead, which most CRTs and many (not all)
-// TVs and upscalers accept. R + C-up switches; a switch to 60 Hz must be
-// confirmed with A within 10 seconds or it goes back to 50 Hz (in case the
-// TV shows nothing). The game itself always runs at its own 60 steps per second.
-static bool g_pal60;
-static uint64_t g_hz_deadline;           // 60 Hz on trial until this time (0: not on trial)
+// A PAL console normally shows 50 pictures a second, an NTSC / M-PAL console 60.
+// The N64 menu (PICTURE) switches to the other rate: libdragon's PAL60 timing
+// on a PAL console, the PAL timing (a 50 Hz picture in NTSC colours) on the
+// others. Most TVs, upscalers and emulators accept both; some older TVs don't,
+// so a switch away from the console's own rate must be confirmed with A
+// within 10 seconds or it goes back (in case the TV shows nothing). The game
+// itself always runs at its own 60 steps per second.
+static bool g_hz_alt;                    // the picture is not at the console's own rate
+static uint64_t g_hz_deadline;           // the other rate on trial until this time (0: not on trial)
 
+static int PictureHz(void) { return (get_tv_type() == TV_PAL) != g_hz_alt ? 50 : 60; }
 static void ToggleRefresh(void) {
-  if (get_tv_type() != TV_PAL) return;   // NTSC / M-PAL consoles are 60 Hz already
-  g_pal60 = !g_pal60;
-  vi_set_timing_preset(g_pal60 ? &VI_TIMING_PAL60 : &VI_TIMING_PAL);
-  g_hz_deadline = g_pal60 ? get_ticks_us() + 10000000 : 0;
-  debugf("refresh: %s (%.2f Hz)\n", g_pal60 ? "PAL60" : "PAL", vi_get_refresh_rate());
+  g_hz_alt = !g_hz_alt;
+  int tv = get_tv_type();
+  const vi_timing_preset_t *own = tv == TV_PAL ? &VI_TIMING_PAL : tv == TV_MPAL ? &VI_TIMING_MPAL : &VI_TIMING_NTSC;
+  const vi_timing_preset_t *other = tv == TV_PAL ? &VI_TIMING_PAL60 : &VI_TIMING_PAL;
+  vi_set_timing_preset(g_hz_alt ? other : own);
+  g_hz_deadline = g_hz_alt ? get_ticks_us() + 10000000 : 0;
+  debugf("refresh: %d Hz (%.2f Hz)\n", PictureHz(), vi_get_refresh_rate());
+}
+
+// ---- N64 menu (L + R + Z) -------------------------------------------------
+// Over the paused game: which action each N64 button does (all four C buttons
+// included), and the port's own options. Saved in cartridge SRAM.
+static uint8_t CfgSum(const N64Cfg *c) {
+  uint8_t s = 0x5A;
+  for (const uint8_t *p = (const uint8_t *)c; p < &c->sum; p++) s = (uint8_t)(s * 31 + *p);
+  return s;
+}
+static void CfgApply(void) {
+#if LOWPOLY
+  g_lowpoly_on = g_cfg.lowpoly;
+#endif
+  if (g_cfg.cf < kCF_Count && g_cfg.cf != g_cf) ColorFilter_Set(g_cfg.cf);
+  g_show_perf = g_cfg.perf;
+}
+static void CfgLoad(void) {
+  memcpy(g_cfg.map, kDefaultMap, sizeof(g_cfg.map));
+  if (g_has_sram) {
+    static N64Cfg c __attribute__((aligned(16)));
+    sram_read(&c, N64CFG_ADR, sizeof(c));
+    bool ok = !memcmp(c.magic, "SMN1", 4) && c.sum == CfgSum(&c);
+    for (int i = 0; ok && i < kN64_Count; i++) ok = c.map[i] < kAct_Count;
+    if (ok) g_cfg = c;
+  }
+  CfgApply();
+}
+static void CfgSave(void) {
+  g_cfg.sum = CfgSum(&g_cfg);
+  if (g_has_sram) {
+    static N64Cfg c __attribute__((aligned(16)));
+    c = g_cfg;
+    sram_write(&c, N64CFG_ADR, sizeof(c));
+  }
+}
+
+// Pages: the main page, the controller mapping, the screen colours.
+enum { kPageMain, kPageButtons, kPageColours };
+enum { kMainButtons, kMainColours, kMainLowpoly, kMainPerf, kMainHz, kMainSave, kMainRows };
+enum { kBtnDefaults = kN64_Count, kBtnBack, kBtnRows };
+enum { kColBack = kCF_Count, kColRows };
+static void MenuUpper(char *d, const char *s, int n) {   // (the 8x8 font reads best in capitals)
+  int i = 0;
+  for (; s[i] && i < n - 1; i++) d[i] = (s[i] >= 'a' && s[i] <= 'z') ? s[i] - 32 : s[i];
+  d[i] = 0;
+}
+// src: the picture on screen when the menu opened (shown behind it, every frame).
+static void N64Menu(surface_t *src) {
+  N64Cfg undo = g_cfg;
+  int page = kPageMain, sel = kMainButtons;
+  surface_t *last = src;
+  uint32_t white = graphics_make_color(255, 255, 255, 255), grey = graphics_make_color(150, 160, 190, 255);
+  uint32_t panel = graphics_make_color(8, 12, 40, 255), edge = graphics_make_color(90, 110, 200, 255);
+  uint32_t hilite = graphics_make_color(40, 60, 140, 255), gold = graphics_make_color(255, 210, 90, 255);
+  bool done = false, save = false;
+  while (!done) {
+    joypad_poll();
+    joypad_buttons_t p = joypad_get_buttons_pressed(JOYPAD_PORT_1);
+    int dy = joypad_get_axis_pressed(JOYPAD_PORT_1, JOYPAD_AXIS_STICK_Y);
+    int dx = joypad_get_axis_pressed(JOYPAD_PORT_1, JOYPAD_AXIS_STICK_X);
+    int rows = page == kPageMain ? kMainRows : page == kPageButtons ? kBtnRows : kColRows;
+    if (p.d_up || dy > 0) sel = (sel + rows - 1) % rows;
+    if (p.d_down || dy < 0) sel = (sel + 1) % rows;
+    int step = (p.d_right || dx > 0) ? 1 : (p.d_left || dx < 0) ? -1 : 0;
+    bool ok = p.a;
+    if (page == kPageMain) {
+      if (ok && sel == kMainButtons) page = kPageButtons, sel = 0, ok = false;
+      else if (ok && sel == kMainColours) page = kPageColours, sel = g_cfg.cf, ok = false;
+      else if (ok && sel == kMainSave) done = save = true;
+      else {
+        if (ok) step = 1;                // (A also changes a line)
+        if (step && sel == kMainColours) { g_cfg.cf = (uint8_t)((g_cfg.cf + kCF_Count + step) % kCF_Count); CfgApply(); }
+        if (step && sel == kMainLowpoly) { g_cfg.lowpoly ^= 1; CfgApply(); }
+        if (step && sel == kMainPerf) { g_cfg.perf ^= 1; CfgApply(); }
+        if (step && sel == kMainHz) ToggleRefresh();
+      }
+      if (p.b) { g_cfg = undo; CfgApply(); done = true; }   // B on the main page: leave without saving
+    } else if (page == kPageButtons) {
+      if (ok && sel < kN64_Count) step = 1;
+      if (step && sel < kN64_Count) g_cfg.map[sel] = (uint8_t)((g_cfg.map[sel] + kAct_Count + step) % kAct_Count);
+      if (ok && sel == kBtnDefaults) memcpy(g_cfg.map, kDefaultMap, sizeof(g_cfg.map));
+      if ((ok && sel == kBtnBack) || p.b) page = kPageMain, sel = kMainButtons;
+    } else {                             // screen colours: A picks one
+      if (ok && sel < kCF_Count) { g_cfg.cf = (uint8_t)sel; CfgApply(); }
+      if ((ok && sel == kColBack) || p.b) page = kPageMain, sel = kMainColours;
+    }
+    if (p.start) done = save = true;     // Start: save and exit, from any page
+    if (g_hz_deadline) {                 // 60 Hz on trial: A keeps it (also in here), else back to 50 Hz
+      if (p.a) g_hz_deadline = 0;
+      else if (get_ticks_us() > g_hz_deadline) ToggleRefresh();
+    }
+
+    // the picture behind it, then the panel
+    surface_t *fb = display_get();
+    memcpy(fb->buffer, last->buffer, fb->stride * fb->height);
+    const int x0 = 28, y0 = 14, w = SCREEN_W - 56, h = SCREEN_H - 28;
+    graphics_draw_box(fb, x0 - 2, y0 - 2, w + 4, h + 4, edge);
+    graphics_draw_box(fb, x0, y0, w, h, panel);
+    const char *title = page == kPageMain ? "N64 MENU" : page == kPageButtons ? "CONTROLLER MAPPING" : "SCREEN COLOURS";
+    graphics_set_color(gold, 0);
+    graphics_draw_text(fb, x0 + (w - (int)strlen(title) * 8) / 2, y0 + 6, title);
+    char t[64], name[32];
+    rows = page == kPageMain ? kMainRows : page == kPageButtons ? kBtnRows : kColRows;
+    for (int r = 0; r < rows; r++) {
+      int y = y0 + 24 + r * (page == kPageMain ? 14 : 11);
+      if (page == kPageMain) {
+        if (r == kMainSave) y += 8;
+        MenuUpper(name, kCfName[g_cfg.cf], sizeof(name));
+        if (r == kMainButtons) snprintf(t, sizeof(t), "CONTROLLER MAPPING  >");
+        else if (r == kMainColours) snprintf(t, sizeof(t), "SCREEN COLOURS > %s", name);
+        else if (r == kMainLowpoly) snprintf(t, sizeof(t), "2.5D CHARACTERS     %s", g_cfg.lowpoly ? "ON" : "OFF");
+        else if (r == kMainPerf) snprintf(t, sizeof(t), "SPEED OVERLAY       %s", g_cfg.perf ? "ON" : "OFF");
+        else if (r == kMainHz) snprintf(t, sizeof(t), "PICTURE             %d HZ", PictureHz());
+        else snprintf(t, sizeof(t), "SAVE AND EXIT");
+      } else if (page == kPageButtons) {
+        if (r >= kBtnDefaults) y += 8;
+        if (r < kN64_Count) snprintf(t, sizeof(t), "%-8s %s", kN64Name[r], kActName[g_cfg.map[r]]);
+        else snprintf(t, sizeof(t), r == kBtnDefaults ? "DEFAULT BUTTONS" : "BACK");
+      } else {
+        if (r == kColBack) y += 8;
+        MenuUpper(name, r < kCF_Count ? kCfName[r] : "", sizeof(name));
+        if (r < kCF_Count) snprintf(t, sizeof(t), "%s %s", r == g_cfg.cf ? "*" : " ", name);
+        else snprintf(t, sizeof(t), "BACK");
+      }
+      if (r == sel) graphics_draw_box(fb, x0 + 4, y - 2, w - 8, 11, hilite);
+      graphics_set_color(r == sel ? white : grey, 0);
+      graphics_draw_text(fb, x0 + 12, y, t);
+    }
+    graphics_set_color(grey, 0);
+    const char *help1 = page == kPageMain ? "A OPEN / CHANGE    B CANCEL" : page == kPageButtons ?
+                        "LEFT/RIGHT OR A: ACTION  B BACK" : "A PICKS (AFTER EXIT)  B BACK";
+    if (g_hz_deadline) {
+      unsigned s = (unsigned)((g_hz_deadline - get_ticks_us()) / 1000000) + 1;
+      snprintf(t, sizeof(t), "%d HZ: PRESS A TO KEEP IT (%u)", PictureHz(), s > 10 ? 10 : s);
+      graphics_draw_text(fb, x0 + 8, y0 + h - 22, t);
+    } else {
+      graphics_draw_text(fb, x0 + 8, y0 + h - 22, help1);
+    }
+    graphics_draw_text(fb, x0 + 8, y0 + h - 11, "START SAVE + EXIT");
+    graphics_set_color(white, 0);
+    display_show(fb);
+    last = fb;
+#if ENABLE_AUDIO
+    if (audio_can_write()) {             // (the game is paused: silence)
+      int16_t *out = audio_write_begin();
+      memset(out, 0, audio_get_buffer_length() * 4);
+      audio_write_end();
+    }
+#endif
+  }
+  if (save) CfgSave();
+  g_input_hold = true;                   // the closing press must not reach the game
 }
 
 // ---- Main ---------------------------------------------------------------------
@@ -624,7 +824,7 @@ int main(void) {
 #endif
   joypad_init();
 #ifdef FORCE_PAL60
-  ToggleRefresh();                       // test builds: 60 Hz from the start, no confirmation
+  if (get_tv_type() == TV_PAL) ToggleRefresh();   // test builds: a PAL console at 60 Hz from the start, no confirmation
   g_hz_deadline = 0;
 #endif
   dfs_init(DFS_DEFAULT_LOCATION);
@@ -690,6 +890,8 @@ int main(void) {
 #endif
 #endif
 
+  CfgLoad();                             // N64 menu settings (buttons, options) from cartridge SRAM
+
   {
     heap_stats_t hs;
     sys_get_heap_stats(&hs);
@@ -716,14 +918,40 @@ int main(void) {
   int dsp_pending_samples = 0;      // samples the last sound job produces
   RspPpuJob &job = g_ppu_job;
 
-  // Performance counters, reported every second on screen (C-up toggles) and via debugf.
-  bool show_perf = true;
-  bool prev_cup = false;
+  // Performance counters, reported every second on screen (N64 menu: SPEED OVERLAY) and via debugf.
+  bool prev_combo = false, menu_req = false, prev_cup = false;
+  int border_clears = 0;            // frames left whose side borders get cleared (after the N64 menu)
+  uint64_t g_lp_msg_until = 0;      // "2.5D characters on / off" in the bottom border until (us)
+  joypad_buttons_t lr_held = {};    // buttons held this frame (the L + R hint in the bottom border)
   uint64_t t_logic = 0, t_draw = 0, t_audio = 0, t_wait = 0, t_window_start = get_ticks_us();
   int n_logic = 0, n_draw = 0, n_shown = 0;
   char perf_text[48] = "";
 
   for (;;) {
+    if (menu_req) {                  // N64 menu: finish the frame in flight, show it, pause over it
+      menu_req = false;
+      while (g_rsp_stage) {}
+#if DSP_ON_RSP && ENABLE_AUDIO
+      if (dsp_pending_samples) {
+        data_cache_hit_invalidate(g_dsp_out, (dsp_pending_samples * 4 + 15) & ~15);
+        AudioPush(g_dsp_out, dsp_pending_samples);
+        dsp_pending_samples = 0;
+      }
+#endif
+      if (pending_fb) {
+#if LOWPOLY
+        LowPoly_Draw(cur ^ 1, pending_fb);
+        LowPoly_Sync();
+#else
+        display_show(pending_fb);
+#endif
+        N64Menu(pending_fb);
+        border_clears = 4;           // the panel reached into the borders of every buffer
+        pending_fb = NULL;           // (the next frame is drawn in full: nothing to copy from)
+      }
+      last = get_ticks_us();
+      accum = LOGIC_STEP_US;
+    }
     surface_t *fb = display_get();   // 4 buffers: shown, queued to show, being drawn by the RSP, this one
     uint8_t *pixels = (uint8_t *)CachedAddr(fb->buffer);
     uint8_t *origin = pixels + ((SCREEN_H - SNES_H) / 2) * fb->stride + ((SCREEN_W - SNES_W) / 2) * 2;
@@ -744,20 +972,22 @@ int main(void) {
     int inputs = ReadInputs();
     {
       joypad_buttons_t held = joypad_get_buttons_held(JOYPAD_PORT_1);
-      if (held.c_up && !prev_cup) {
-        if (held.l && held.r) g_lowpoly_on = !g_lowpoly_on;   // L + R + C-up: low-poly look on / off
-        else if (held.l) {                 // L + C-up: next colour filter
-          ColorFilter_Set((g_cf + 1) % kCF_Count);
-          g_cf_msg_until = get_ticks_us() + 3000000;
-        }
-        else if (held.r) ToggleRefresh();  // R + C-up: 50 / 60 Hz (PAL consoles)
-        else show_perf = !show_perf;
+      lr_held = held;
+      bool combo = held.l && held.r && held.z;   // L + R + Z, any order: the N64 menu (next frame)
+      if (combo && !prev_combo) menu_req = true;
+      prev_combo = combo;
+#if LOWPOLY
+      if (held.c_up && !prev_cup && held.l && held.r) {   // L + R + C-up: low-poly 2.5D characters on / off
+        g_cfg.lowpoly ^= 1;
+        g_lowpoly_on = g_cfg.lowpoly;
+        g_lp_msg_until = get_ticks_us() + 2000000;
       }
+#endif
+      prev_cup = held.c_up;
       if (g_hz_deadline) {               // 60 Hz on trial: A keeps it, otherwise back to 50 Hz
         if (held.a) g_hz_deadline = 0;
         else if (get_ticks_us() > g_hz_deadline) ToggleRefresh();
       }
-      prev_cup = held.c_up;
     }
     PpuFrame *frame = &g_frames[cur];
     for (int s = 0; s < steps; s++) {
@@ -847,15 +1077,32 @@ int main(void) {
 
     // Top border (8 px above the game picture): performance readout. The RSP never writes there.
     graphics_draw_box(fb, 0, 0, SCREEN_W, 8, graphics_make_color(0, 0, 0, 255));
+    if (border_clears > 0) {           // after the N64 menu: the area around the game picture, black again
+      border_clears--;
+      uint32_t black = graphics_make_color(0, 0, 0, 255);
+      int top = (SCREEN_H - SNES_H) / 2, side = (SCREEN_W - SNES_W) / 2;
+      graphics_draw_box(fb, 0, 0, side, SCREEN_H, black);
+      graphics_draw_box(fb, SCREEN_W - side, 0, side, SCREEN_H, black);
+      graphics_draw_box(fb, 0, 0, SCREEN_W, top, black);
+      graphics_draw_box(fb, 0, SCREEN_H - top, SCREEN_W, top, black);
+    }
     if (g_hz_deadline) {
       char t[48];
       unsigned left = (unsigned)((g_hz_deadline - get_ticks_us()) / 1000000) + 1;
-      snprintf(t, sizeof(t), "60 Hz: press A to keep it (%u)", left > 10 ? 10 : left);
+      snprintf(t, sizeof(t), "%d Hz: press A to keep it (%u)", PictureHz(), left > 10 ? 10 : left);
       graphics_draw_text(fb, 4, 0, t);
-    } else if (show_perf) graphics_draw_text(fb, 4, 0, perf_text);
+    } else if (g_show_perf) graphics_draw_text(fb, 4, 0, perf_text);
     // Bottom border (8 px below the picture): the colour filter's name for 3 s after a change.
     graphics_draw_box(fb, 0, SCREEN_H - 8, SCREEN_W, 8, graphics_make_color(0, 0, 0, 255));
-    if (get_ticks_us() < g_cf_msg_until) {
+    if (lr_held.l && lr_held.r) {      // L + R held: what the shortcuts see (and how to use them)
+      char t[64];
+      snprintf(t, sizeof(t), "L+R:  Z MENU   C-UP 2.5D CHARACTERS");
+      graphics_draw_text(fb, 4, SCREEN_H - 8, t);
+    }
+    else if (get_ticks_us() < g_lp_msg_until) {
+      graphics_draw_text(fb, 4, SCREEN_H - 8, g_cfg.lowpoly ? "2.5D characters: ON" : "2.5D characters: OFF");
+    }
+    else if (get_ticks_us() < g_cf_msg_until) {
       char t[64];
       snprintf(t, sizeof(t), "Colour filter: %s  (%d/%d)", kCfName[g_cf], g_cf + 1, kCF_Count);
       graphics_draw_text(fb, 4, SCREEN_H - 8, t);

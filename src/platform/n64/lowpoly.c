@@ -312,7 +312,7 @@ typedef struct {
   bool big;                             // in the big pool (a boss drawn from sprites)
 } LpObj;
 #define LP_MAXOBJ (1 + LP_MAXEN)
-#define LP_MAXPC 160                    // pieces of the 2D picture drawn again in front of a BG2 boss
+#define LP_MAXPC 128                    // pieces of the 2D picture drawn again in front of a BG2 boss
 
 typedef struct {
   bool on;                              // drawn
@@ -1557,11 +1557,59 @@ static inline float LpYawAt(float cx) {  // turned by where it is on the screen:
 }
 
 // Pieces from .. to of the 2D picture, as they are (8 x 8 each), scissored to rows row0 .. row1.
+#ifndef LP_HOST_TEST
+// The pieces' pixels, taken from the finished picture (before any 3D is drawn
+// on it) where the piece's tile has pixels: exactly what the 2D picture shows
+// there, colour math (fog, rain, water...) included; transparent elsewhere.
+// RGBA5551, 8 x 8 each, for this draw only.
+static uint16_t g_lp_pcpix[LP_MAXPC * 64] __attribute__((aligned(16)));
+static void LpPiecesFromPicture(const LpFrame *lf, const surface_t *fb) {
+  const uint16_t *px = (const uint16_t *)fb->buffer;   // (uncached: the RSP drew it)
+  int stride = fb->stride / 2;
+  for (int i = 0; i < lf->npc; i++) {
+    const uint8_t *m = lf->tex + lf->pctex + i * 64;
+    uint16_t *d = &g_lp_pcpix[i * 64];
+    int x0 = SNES_LEFT + lf->pc[i].x, y0 = SNES_TOP + lf->pc[i].y;
+    for (int y = 0; y < 8; y++)
+      for (int x = 0; x < 8; x++) {
+        int sx = x0 + x, sy = y0 + y;
+        bool in = sx >= SNES_LEFT && sx < SNES_LEFT + SNES_W && sy >= SNES_TOP && sy < SNES_TOP + SNES_H;
+        d[y * 8 + x] = (m[y * 8 + x] && in) ? (uint16_t)(px[sy * stride + sx] | 1) : 0;
+      }
+  }
+  data_cache_hit_writeback(g_lp_pcpix, ((lf->npc * 128) + 15) & ~15);
+}
+#endif
+
+// Pieces from .. to of the 2D picture, as they are (8 x 8 each), scissored to rows row0 .. row1.
 static void LpDrawPieces(const LpFrame *lf, int from, int to, int row0, int row1) {
   if (to <= from || row1 <= row0) return;
   LpPut(LP_SCISSOR(SNES_LEFT, SNES_TOP + row0, SNES_LEFT + SNES_W, SNES_TOP + row1));
-  LpTlut(0, lf->fullpal, 256);
   LpPut(LpGrey(1.0f));
+#ifndef LP_HOST_TEST
+  // RGBA16 copies of the picture (LpPiecesFromPicture): no TLUT, alpha compare
+  LpPut(LP_SYNC_PIPE);
+  LpPut(LP_OTHER_MODES(LP_SOM_FLAT | 1ull));
+  for (int b = from; b < to; b += LP_TEXELS / 64) {
+    int n = to - b < LP_TEXELS / 64 ? to - b : LP_TEXELS / 64;
+    LpPut(LP_SYNC_PIPE);
+    LpPut(LP_TEX_IMAGE(8, PhysicalAddr(g_lp_pcpix + b * 64)));
+    LpPut(LP_SET_TILE(7, 2, 0));
+    LpPut(LP_SYNC_LOAD);
+    LpPut(LP_LOAD_TILE(7, 8, n * 8));
+    LpPut(LP_SYNC_TILE);
+    LpPut(LP_SET_TILE(0, 2, 0));
+    LpPut(LP_TILE_SIZE(0, 8, n * 8));
+    for (int j = 0; j < n; j++) {
+      int x = SNES_LEFT + lf->pc[b + j].x, y = SNES_TOP + lf->pc[b + j].y;
+      LpTexRect(x * 4, y * 4, (x + 8) * 4, (y + 8) * 4, 0, j * 8 * 32);
+    }
+  }
+  LpPut(LP_SYNC_PIPE);                  // back to the layers' mode
+  LpPut(LP_OTHER_MODES(LP_SOM_LAYER));
+#else
+  // PC test: the pieces' own colours through the TLUT (it has no picture to copy from)
+  LpTlut(0, lf->fullpal, 256);
   for (int b = from; b < to; b += LP_TEXELS / 64) {
     int n = to - b < LP_TEXELS / 64 ? to - b : LP_TEXELS / 64;
     LpLoadTex(lf->tex + lf->pctex + b * 64, 8, n * 8);
@@ -1570,6 +1618,7 @@ static void LpDrawPieces(const LpFrame *lf, int from, int to, int row0, int row1
       LpTexRect(x * 4, y * 4, (x + 8) * 4, (y + 8) * 4, 0, j * 8 * 32);
     }
   }
+#endif
 }
 
 // The BG2 boss (its 2D picture is under it, exactly covered by its outline's
@@ -1717,6 +1766,12 @@ static void LpFlushShow(void) {         // the RDP is idle: make sure its pictur
   if (fb) display_show(fb);
 }
 
+// Waits until the RDP has finished (and shown) the last picture LowPoly_Draw had.
+static void LowPoly_Sync(void) {
+  while (LP_DP[3] & (0x400 | 0x20 | 0x40 | 0x100)) {}
+  LpFlushShow();
+}
+
 // Draws frame idx's models into its finished picture fb and shows it (now, or
 // from the DP interrupt once the RDP is done).
 static void LowPoly_Draw(int idx, surface_t *fb) {
@@ -1727,6 +1782,9 @@ static void LowPoly_Draw(int idx, surface_t *fb) {
   while (LP_DP[3] & (0x400 | 0x20 | 0x40 | 0x100)) {}   // idle (nothing else uses the RDP)
   LpFlushShow();
   if (!lf->on) { display_show(fb); return; }
+#ifndef LP_HOST_TEST
+  if (lf->npc) LpPiecesFromPicture(lf, fb);   // (before the RDP draws anything on it)
+#endif
   LP_DP[3] = 0x1 | 0x4 | 0x10;          // commands from RDRAM, unfreeze, unflush
   g_lp_w = g_lp_wstart = g_lp_cmds;
   g_lp_wend = g_lp_cmds + LP_CHUNK;
