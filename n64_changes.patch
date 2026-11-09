@@ -1,0 +1,1963 @@
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..3cb9308
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,49 @@
++# Super Metroid -> N64 port (snesrev/sm game code + libdragon platform layer)
++# Build: put your own ROM at filesystem/sm.smc, then run `make`.
++
++BUILD_DIR = build
++include $(N64_INST)/include/n64.mk
++
++N64_ROM_TITLE    = "Super Metroid 64"
++N64_ROM_SAVETYPE = sram256k
++
++GAME_SRCS := $(wildcard src/*.c)
++SNES_SRCS := $(wildcard src/snes/*.c)
++PLAT_SRCS := src/platform/n64/n64_main.c src/platform/n64/n64_glue.c
++RSP_SRCS  := src/platform/n64/rsp_ppu.S
++SRCS      := $(GAME_SRCS) $(SNES_SRCS) $(PLAT_SRCS)
++
++# Everything is compiled as C++ (gnu++20), so the game code can use the
++# byte-order-safe LeInt types from src/types.h (enabled by SM_LE_TYPES).
++# The SNES hardware code (src/snes) keeps native integer types.
++SM_CXXFLAGS = -x c++ -std=gnu++20 -fpermissive -fno-exceptions -fno-rtti -fno-threadsafe-statics \
++              -O2 -fno-strict-aliasing -ftrivial-auto-var-init=uninitialized -w -Wno-error -I. -Isrc -DPPU_OUT16
++
++# snesrev's SNES hardware code uses a few names libdragon also exports.
++RENAMES = -Dcart_init=snes_cart_init -Ddma_read=snes_dma_read -Ddma_write=snes_dma_write
++
++all: sm64.z64
++
++ifeq ($(wildcard filesystem/sm.smc),)
++$(error filesystem/sm.smc not found - copy your own Super Metroid (JU) ROM there, see README.md)
++endif
++
++# Replaces libdragon's default C rule: compile .c files with the C++ compiler.
++$(BUILD_DIR)/%.o: %.c
++	@mkdir -p $(dir $@)
++	@echo "    [C++] $<"
++	$(N64_CXX) -c $(N64_CXXFLAGS) $(SM_CXXFLAGS) $(SM_EXTRA) $(TEST_FLAGS) -MMD -o $@ $<
++
++$(GAME_SRCS:%.c=$(BUILD_DIR)/%.o): SM_EXTRA = -DSM_LE_TYPES $(RENAMES)
++$(PLAT_SRCS:%.c=$(BUILD_DIR)/%.o): SM_EXTRA = -DSM_LE_TYPES
++$(SNES_SRCS:%.c=$(BUILD_DIR)/%.o): SM_EXTRA = $(RENAMES)
++
++$(BUILD_DIR)/sm64.dfs: filesystem/sm.smc
++$(BUILD_DIR)/sm64.elf: $(SRCS:%.c=$(BUILD_DIR)/%.o) $(RSP_SRCS:%.S=$(BUILD_DIR)/%.o)
++sm64.z64: $(BUILD_DIR)/sm64.dfs
++
++clean:
++	rm -rf $(BUILD_DIR) sm64.z64
++
++-include $(wildcard $(BUILD_DIR)/src/*.d $(BUILD_DIR)/src/*/*.d $(BUILD_DIR)/src/*/*/*.d)
++.PHONY: all clean
+diff --git a/src/config.h b/src/config.h
+index 724965e..9690dab 100644
+--- a/src/config.h
++++ b/src/config.h
+@@ -1,6 +1,8 @@
+ #pragma once
+ #include "types.h"
++#ifndef N64
+ #include <SDL_keycode.h>
++#endif
+ 
+ enum {
+   kKeys_Null,
+@@ -103,5 +105,7 @@ enum {
+ extern Config g_config;
+ 
+ void ParseConfigFile(const char *filename);
++#ifndef N64
+ int FindCmdForSdlKey(SDL_Keycode code, SDL_Keymod mod);
++#endif
+ int FindCmdForGamepadButton(int button, uint32 modifiers);
+diff --git a/src/ida_types.h b/src/ida_types.h
+index fb85a88..40b4407 100644
+--- a/src/ida_types.h
++++ b/src/ida_types.h
+@@ -1156,6 +1156,7 @@ typedef struct DemoRoomData {
+ 
+ /* 118 */
+ typedef union PauseScreenSpriteAnimationData {
++#if !(defined(__cplusplus) && defined(SM_LE_TYPES))  // only .arr is used
+   struct {
+     VoidP unused;
+     VoidP lr_highlight;
+@@ -1167,6 +1168,7 @@ typedef union PauseScreenSpriteAnimationData {
+     VoidP map_scroll_arrow_right;
+     VoidP map_scroll_arrow_left;
+   };
++#endif
+   VoidP arr[9];
+ } PauseScreenSpriteAnimationData;
+ 
+diff --git a/src/sm_80.c b/src/sm_80.c
+index 2d9f2dd..17bc1cb 100644
+--- a/src/sm_80.c
++++ b/src/sm_80.c
+@@ -155,7 +155,7 @@ CoroutineRet Vector_RESET_Async(void) {  // 0x80841C
+   WriteReg(MEMSEL, 1);
+   reg_MEMSEL = 1;
+   // Removed code to wait 4 frames
+-  uint16 bak = bug_fix_counter;
++  uint16 bak; bak = bug_fix_counter;
+   memset(g_ram, 0, 8192);
+   bug_fix_counter = bak;
+   COROUTINE_AWAIT(2, InitializeIoDisplayLogo_Async());
+@@ -1121,7 +1121,7 @@ void IrqHandler_6_Main_EndHudDraw(void) {  // 0x8096A9
+ 
+   uint16 a = irqhandler_next_handler;
+   irqhandler_next_handler = 0;
+-  IrqHandler_SetResult(a ? a : 4, 0, 152);
++  IrqHandler_SetResult(a ? +a : 4, 0, 152);
+ }
+ 
+ void IrqHandler_8_StartOfDoor_BeginHud(void) {  // 0x8096D3
+@@ -1141,7 +1141,7 @@ void IrqHandler_10_StartOfDoor_EndHud(void) {  // 0x8096F1
+   WriteReg(TM, v0);
+   uint16 a = irqhandler_next_handler;
+   irqhandler_next_handler = 0;
+-  IrqHandler_SetResult(a ? a : 8, 0, 152);
++  IrqHandler_SetResult(a ? +a : 8, 0, 152);
+ }
+ 
+ void IrqHandler_12_Draygon_BeginHud(void) {  // 0x80971A
+@@ -1157,7 +1157,7 @@ void IrqHandler_14_Draygon_EndHud(void) {  // 0x809733
+   WriteReg(CGADSUB, gameplay_CGADSUB);
+   uint16 a = irqhandler_next_handler;
+   irqhandler_next_handler = 0;
+-  IrqHandler_SetResult(a ? a : 12, 0, 152);
++  IrqHandler_SetResult(a ? +a : 12, 0, 152);
+ }
+ 
+ void IrqHandler_16_VerticalDoor_BeginHud(void) {  // 0x809758
+@@ -1184,7 +1184,7 @@ void IrqHandler_18_VerticalDoor_EndHud(void) {  // 0x809771
+ void IrqHandler_20_VerticalDoor_EndDraw(void) {  // 0x8097A9
+   uint16 a = irqhandler_next_handler;
+   irqhandler_next_handler = 0;
+-  IrqHandler_SetResult(a ? a : 16, 0, 152);
++  IrqHandler_SetResult(a ? +a : 16, 0, 152);
+ }
+ 
+ void IrqHandler_22_HorizDoor_BeginHud(void) {  // 0x8097C1
+@@ -1212,7 +1212,7 @@ void IrqHandler_24_HorizDoor_EndHud(void) {  // 0x8097DA
+ void IrqHandler_26_HorizDoor_EndDraw(void) {  // 0x80980A
+   uint16 a = irqhandler_next_handler;
+   irqhandler_next_handler = 0;
+-  IrqHandler_SetResult(a ? a : 22, 0, 152);
++  IrqHandler_SetResult(a ? +a : 22, 0, 152);
+ }
+ 
+ void EnableIrqInterrupts(void) {  // 0x80982A
+@@ -1623,7 +1623,7 @@ CoroutineRet StartGameplay_Async(void) {  // 0x80A07B
+   CalculateBgScrolls();
+   DisplayViewablePartOfRoom();
+   EnableNMI();
+-  irqhandler_next_handler = (room_loading_irq_handler == 0) ? 4 : room_loading_irq_handler;
++  irqhandler_next_handler = (room_loading_irq_handler == 0) ? 4 : +room_loading_irq_handler;
+   EnableIrqInterrupts();
+   COROUTINE_AWAIT(3, Play20FramesOfMusic_Async());
+   SpawnHardcodedPlm((SpawnHardcodedPlmArgs) { 0x08, 0x08, 0xb7eb });
+@@ -2554,7 +2554,7 @@ static uint8 ReadPpuByte(uint16 addr) {
+   WriteRegWord(VMADDL, addr >> 1);
+   ReadRegWord(RDVRAML);  // latch
+   uint16 data = ReadRegWord(RDVRAML);
+-  return (addr & 1) ? GET_HIBYTE(data) : data;
++  return (addr & 1) ? GET_HIBYTE(data) : +data;
+ }
+ 
+ void DecompressToVRAM(uint32 src, uint16 dst_addr) {  // 0x80B271
+diff --git a/src/sm_82.c b/src/sm_82.c
+index 810d8dd..39e80ef 100644
+--- a/src/sm_82.c
++++ b/src/sm_82.c
+@@ -3384,7 +3384,7 @@ uint16 CalculateNthTransitionColorComponentFromXtoY(uint16 a, uint16 k, uint16 j
+   if (v4 == palette_change_denom)
+     return j;
+   uint16 RegWord = SnesDivide(abs16(j - k) << 8, palette_change_denom - (v4 + 1) + 1);
+-  uint16 r18 = sign16(j - k) ? -RegWord : RegWord;
++  uint16 r18 = sign16(j - k) ? -RegWord : +RegWord;
+   return (uint16)(r18 + (k << 8)) >> 8;
+ }
+ 
+diff --git a/src/sm_84.c b/src/sm_84.c
+index 44f3f6f..2d499a8 100644
+--- a/src/sm_84.c
++++ b/src/sm_84.c
+@@ -225,7 +225,7 @@ CoroutineRet PlmHandler_Async(void) {  // 0x8485B4
+     CallPlmPreInstr(plm_pre_instrs[plm_id >> 1] | 0x840000, plm_id);
+     if (--plm_instruction_timer[plm_id >> 1])
+       continue;
+-    const uint8 *base = RomBankBase(0x84), *v5;
++    const uint8 *base, *v5; base = RomBankBase(0x84);
+     v5 = base + plm_instr_list_ptrs[plm_id >> 1];
+     while (1) {
+       if ((GET_WORD(v5) & 0x8000) == 0)
+diff --git a/src/sm_86.c b/src/sm_86.c
+index 951475e..387238c 100644
+--- a/src/sm_86.c
++++ b/src/sm_86.c
+@@ -3048,7 +3048,7 @@ void EprojPreInstr_MotherBrainBomb(uint16 k) {  // 0x86C4C8
+     v2 = abs16(eproj_x_vel[v1]) - 2;
+     if (v2 < 0)
+       v2 = 0;
+-    eproj_x_vel[v1] = sign16(eproj_x_vel[v1]) ? -v2 : v2;
++    eproj_x_vel[v1] = sign16(eproj_x_vel[v1]) ? -v2 : +v2;
+     if (MoveMotherBrainBomb(k, 7) & 1) {
+ LABEL_5:;
+       int v3 = k >> 1;
+@@ -3116,7 +3116,7 @@ uint16 Math_MultByCos(uint16 a, uint16 r18) {  // 0x86C272
+ uint16 Math_MultBySinCos(uint16 r38, uint16 a) {  // 0x86C27A
+   uint16 r46 = kSinCosTable8bit_Sext[(a & 0xff) + 64];
+   uint16 prod = (uint32)r38 * abs16(r46) >> 8;
+-  return sign16(r46) ? -prod : prod;
++  return sign16(r46) ? -prod : +prod;
+ }
+ 
+ void Eproj_MotherBrainsBlueRingLasers(uint16 j) {  // 0x86C2F3
+@@ -3272,7 +3272,7 @@ uint8 MoveMotherBrainBomb(uint16 k, uint16 a) {  // 0x86C5C2
+   if (sign16(eproj_y_pos[v2] - 208))
+     return 0;
+   eproj_y_pos[v2] = 208;
+-  eproj_x_vel[v2] = sign16(eproj_x_vel[v2]) ? -eproj_E[v2] : eproj_E[v2];
++  eproj_x_vel[v2] = sign16(eproj_x_vel[v2]) ? -eproj_E[v2] : +eproj_E[v2];
+   eproj_y_vel[v2] = -512;
+   return 1;
+ }
+@@ -3445,7 +3445,7 @@ void EprojPreInstr_MotherBrainsExplodedDoorParticles(uint16 k) {  // 0x86C9D2
+   int16 v2 = abs16(eproj_x_vel[v1]) - 16;
+   if (v2 < 0)
+     v2 = 0;
+-  eproj_x_vel[v1] = sign16(eproj_x_vel[v1]) ? -v2 : v2;
++  eproj_x_vel[v1] = sign16(eproj_x_vel[v1]) ? -v2 : +v2;
+   eproj_y_vel[v1] += 32;
+   MoveEprojWithVelocity(k);
+   if ((--eproj_E[v1] & 0x8000) != 0) {
+@@ -4778,7 +4778,7 @@ uint16 RandomDropRoutine(uint16 k) {  // 0x86F106
+   }
+   health_drop_bias_flag = v5;
+ LABEL_7:;
+-  const uint8 *v7 = RomPtr_B4(v2);
++  const uint8 *v7; v7 = RomPtr_B4(v2);
+   if ((uint8)health_drop_bias_flag) {
+     r18 = v7[1] + *v7;
+     r22 = 3;
+diff --git a/src/sm_90.c b/src/sm_90.c
+index 01a6731..430d0fd 100644
+--- a/src/sm_90.c
++++ b/src/sm_90.c
+@@ -1467,7 +1467,7 @@ void Samus_InitJump(void) {  // 0x9098BC
+ 
+   if ((equipped_items & 0x20) != 0)
+     goto LABEL_7;
+-  uint16 r18 = Samus_GetBottom_R18();
++  uint16 r18; r18 = Samus_GetBottom_R18();
+   if ((fx_y_pos & 0x8000) == 0) {
+     if (sign16(fx_y_pos - r18) && (fx_liquid_options & 4) == 0) {
+       v0 = 2;
+@@ -1507,7 +1507,7 @@ void Samus_InitWallJump(void) {  // 0x909949
+ 
+   if ((equipped_items & 0x20) != 0)
+     goto LABEL_7;
+-  uint16 r18 = Samus_GetBottom_R18();
++  uint16 r18; r18 = Samus_GetBottom_R18();
+   if ((fx_y_pos & 0x8000) == 0) {
+     if (sign16(fx_y_pos - r18) && (fx_liquid_options & 4) == 0) {
+       v0 = 2;
+@@ -1685,7 +1685,7 @@ void Samus_DetermineAccel_Y(void) {  // 0x909C5B
+ 
+   if ((equipped_items & 0x20) != 0)
+     goto LABEL_7;
+-  uint16 r18 = Samus_GetBottom_R18();
++  uint16 r18; r18 = Samus_GetBottom_R18();
+   if ((fx_y_pos & 0x8000) == 0) {
+     if (sign16(fx_y_pos - r18) && (fx_liquid_options & 4) == 0) {
+       samus_y_subaccel = g_word_909EA3;
+@@ -2267,7 +2267,7 @@ void UpdateMinimap(void) {  // 0x90A91B
+   r9 += 4;
+   uint16 r42 = swap16(GET_WORD(r9));
+   if ((R50 & 3) == 3) {
+-    v10 = r46 ? r52 >> 1 : r32;
++    v10 = r46 ? r52 >> 1 : +r32;
+     if (!sign16(v10 - 6)) {
+       uint8 R48 = r34 ? (R50 - 124) : (R50 + 125);
+ 
+@@ -4454,7 +4454,7 @@ void ProjPreInstr_IceSba2(uint16 k) {  // 0x90CF7A
+   }
+   int v3;
+   v3 = k >> 1;
+-  Point16U pt = Projectile_SinLookup(projectile_variables[v3], projectile_bomb_x_speed[v3]);
++  Point16U pt; pt = Projectile_SinLookup(projectile_variables[v3], projectile_bomb_x_speed[v3]);
+   pt.x += samus_x_pos;
+   projectile_x_pos[v3] = pt.x;
+   v5 = pt.x - layer1_x_pos;
+@@ -5875,7 +5875,7 @@ int32 Samus_CalcDisplacementMoveRight(int32 amt) {  // 0x90E4AD
+ 
+ uint32 Samus_CalcSpeed_X(uint32 amt) {  // 0x90E4E6
+   amt += __PAIR32__(samus_x_extra_run_speed, samus_x_extra_run_subspeed);
+-  amt >>= (samus_x_speed_divisor <= 4) ? samus_x_speed_divisor : 4;
++  amt >>= (samus_x_speed_divisor <= 4) ? +samus_x_speed_divisor : 4;
+   SetHiLo(&samus_total_x_speed, &samus_total_x_subspeed, amt);
+   return amt;
+ }
+diff --git a/src/sm_91.c b/src/sm_91.c
+index ca32201..ff3e1b1 100644
+--- a/src/sm_91.c
++++ b/src/sm_91.c
+@@ -655,8 +655,8 @@ static void XrayFillUpRamped(uint16 *dest, int pos, uint32 left, uint32 left_ste
+   do {
+     left += left_step;
+     right += right_step;
+-    uint32 left_val = (left & ~0xffff) ? (((int32)left < 0) ? 0 : 0xffff) : left;
+-    uint32 right_val = (right & ~0xffff) ? (((int32)right < 0) ? 0 : 0xffff) : right;
++    uint32 left_val = (left & ~0xffff) ? (((int32)left < 0) ? 0 : 0xffff) : +left;
++    uint32 right_val = (right & ~0xffff) ? (((int32)right < 0) ? 0 : 0xffff) : +right;
+     // If both left and right reached the end, fill the remainder with 0xff
+     bool finished = (left & ~0xffff) && (right & ~0xffff) && (((left_step ^ left) | (right_step ^ right)) >> 31) == 0;
+     dest[pos >> 1] = ((int32)right < 0 || (int32)left >= 0x10000) ? 0xff : (left_val >> 8 | right_val & ~0xff);
+@@ -673,8 +673,8 @@ static void XrayFillDownRamped(uint16 *dest, int pos, uint32 left, uint32 left_s
+   do {
+     left += left_step;
+     right += right_step;
+-    uint32 left_val = (left & ~0xffff) ? (((int32)left < 0) ? 0 : 0xffff) : left;
+-    uint32 right_val = (right & ~0xffff) ? (((int32)right < 0) ? 0 : 0xffff) : right;
++    uint32 left_val = (left & ~0xffff) ? (((int32)left < 0) ? 0 : 0xffff) : +left;
++    uint32 right_val = (right & ~0xffff) ? (((int32)right < 0) ? 0 : 0xffff) : +right;
+     bool finished = (left & ~0xffff) && (right & ~0xffff) && (((left_step ^ left) | (right_step ^ right)) >> 31) == 0;
+     // If both left and right got clamped, fill the remainder with 0xff
+     dest[pos >> 1] = ((int32)right < 0 || (int32)left >= 0x10000) ? 0xff : (left_val >> 8 | right_val & ~0xff);
+@@ -802,8 +802,8 @@ void CalculateXrayHdmaTableInner(uint16 k, uint16 j, uint16 r18, uint16 r20, boo
+   ctx->r28 = r20 + r18;
+   if (!sign16(r20 + r18 - 257))
+     ctx->r28 = r20 + r18 - 256;
+-  ctx->r30 = kTanTable[sign16(ctx->r26 - 128) ? ctx->r26 : ctx->r26 - 128];
+-  ctx->r32 = kTanTable[sign16(ctx->r28 - 128) ? ctx->r28 : ctx->r28 - 128];
++  ctx->r30 = kTanTable[sign16(ctx->r26 - 128) ? +ctx->r26 : ctx->r26 - 128];
++  ctx->r32 = kTanTable[sign16(ctx->r28 - 128) ? +ctx->r28 : ctx->r28 - 128];
+ 
+   if (!r20 && (r18 == 64 || r18 == 192)) {
+     v3 = 8;
+@@ -2481,7 +2481,7 @@ LABEL_11:
+   }
+   samus_collision_direction = 0;
+   amt = INT16_SHL16(1);
+-  CheckEnemyColl_Result cres = Samus_CheckSolidEnemyColl(amt);
++  CheckEnemyColl_Result cres; cres = Samus_CheckSolidEnemyColl(amt);
+   if (cres.collision)
+     goto LABEL_11;
+   amt = INT16_SHL16(-1);
+diff --git a/src/sm_94.c b/src/sm_94.c
+index ad7e2c3..fdc8651 100644
+--- a/src/sm_94.c
++++ b/src/sm_94.c
+@@ -181,7 +181,7 @@ static uint16 PostGrappleColl_Horiz_Slope_NonSquare(PostGrappleCollInfo *pgci, u
+     uint16 v3 = samus_y_pos ^ (BTS[k] & 0x80 ? 0xF : 0);
+     uint16 v4 = 16 * (BTS[k] & 0x1F) + (v3 & 0xF);
+     int16 result = (kAlignPos_Tab1[v4] & 0x1F) - (pgci->pgci_r32 & 0xF) - 1;
+-    return (result >= 0) ? result : -1;
++    return (result >= 0) ? +result : -1;
+   } else {
+     if ((samus_x_pos >> 4) != SnesModulus(cur_block_index, room_width_in_blocks))
+       return -1;
+@@ -205,7 +205,7 @@ static uint16 PostGrappleColl_Vert_Slope_NonSquare(PostGrappleCollInfo *pgci, ui
+     uint16 v4 = samus_x_pos ^ ((BTS[k] & 0x40) != 0 ? 0xf : 0);
+     uint16 v5 = 16 * (BTS[k] & 0x1F) + (v4 & 0xF);
+     uint16 result = (kAlignYPos_Tab0[v5] & 0x1F) - temp_collision_DD4 - 1;
+-    return ((int16)result >= 0) ? result : -1;
++    return ((int16)result >= 0) ? +result : -1;
+   }
+   uint16 mod = SnesModulus(cur_block_index, room_width_in_blocks);
+   if ((samus_x_pos >> 4) != mod)
+@@ -482,7 +482,7 @@ static uint8 BlockColl_Vert_Slope_NonSquare(CollInfo *ci, uint16 k) {  // 0x9486
+       return 0;
+     if (BTS[k] & 0x80)
+       return 0;
+-    uint16 v10 = (BTS[k] & 0x40) != 0 ? samus_x_pos ^ 0xF : samus_x_pos;
++    uint16 v10 = (BTS[k] & 0x40) != 0 ? samus_x_pos ^ 0xF : +samus_x_pos;
+     uint16 v11 = 16 * (BTS[k] & 0x1F) + (v10 & 0xF);
+     int16 v12 = (kAlignYPos_Tab0[v11] & 0x1F) - ((samus_y_radius + ci->ci_r24 - 1) & 0xF) - 1;
+     if (v12 <= 0) {
+@@ -499,7 +499,7 @@ static uint8 BlockColl_Vert_Slope_NonSquare(CollInfo *ci, uint16 k) {  // 0x9486
+       return 0;
+     if (!(BTS[k] & 0x80))
+       return 0;
+-    uint16 v4 = (BTS[k] & 0x40) != 0 ? (samus_x_pos ^ 0xF) : (samus_x_pos);
++    uint16 v4 = (BTS[k] & 0x40) != 0 ? (samus_x_pos ^ 0xF) : +(samus_x_pos);
+     uint16 v5 = 16 * (BTS[k] & 0x1F) + (v4 & 0xF);
+     int16 v6 = (kAlignYPos_Tab0[v5] & 0x1F) - ((ci->ci_r24 - samus_y_radius) & 0xF ^ 0xF) - 1;
+     if (v6 <= 0) {
+@@ -525,7 +525,7 @@ void Samus_AlignYPosSlope(void) {  // 0x9487F4
+     uint16 temp_collision_DD6 = 16 * (BTS[cur_block_index] & 0x1F);
+     uint8 v0 = BTS[cur_block_index];
+     if (!(v0 & 0x80)) {
+-      uint16 v1 = (v0 & 0x40) != 0 ? samus_x_pos ^ 0xF : samus_x_pos;
++      uint16 v1 = (v0 & 0x40) != 0 ? samus_x_pos ^ 0xF : +samus_x_pos;
+       uint16 v2 = (kAlignYPos_Tab0[temp_collision_DD6 + (v1 & 0xF)] & 0x1F) - temp_collision_DD4 - 1;
+       if ((int16)v2 < 0) {
+         samus_y_pos += v2;
+@@ -541,7 +541,7 @@ void Samus_AlignYPosSlope(void) {  // 0x9487F4
+     uint16 temp_collision_DD6 = 16 * (BTS[cur_block_index] & 0x1F);
+     uint8 v3 = BTS[cur_block_index];
+     if (v3 & 0x80) {
+-      uint16 v4 = (v3 & 0x40) != 0 ? samus_x_pos ^ 0xF : samus_x_pos;
++      uint16 v4 = (v3 & 0x40) != 0 ? samus_x_pos ^ 0xF : +samus_x_pos;
+       uint16 v6 = (kAlignYPos_Tab0[temp_collision_DD6 + (v4 & 0xF)] & 0x1F) - temp_collision_DD4 - 1;
+       if ((int16)v6 <= 0) {
+         samus_y_pos -= v6;
+@@ -1042,7 +1042,7 @@ int32 WallJumpBlockCollDetect(int32 amt) {  // 0x94967F
+   flag_samus_in_quicksand = 0;
+   Pair_Bool_Amt pair = BlockColl_Handle_Horiz(amt);
+   samus_collision_flag = pair.flag;
+-  return pair.amt >= 0 ? pair.amt : -pair.amt;
++  return pair.amt >= 0 ? +pair.amt : -pair.amt;
+ }
+ 
+ // Returns the new value of amt and not the carry flag,
+@@ -1053,7 +1053,7 @@ static int32 CollDetectDueToPoseChange_SingleBlock(int32 amt) {  // 0x9496E3
+   Pair_Bool_Amt pair = !(nmi_frame_counter_word & 1) ?
+       BlockColl_Handle_Vert_LeftToRight(amt) : BlockColl_Handle_Vert_RightToLeft(amt);
+   samus_collision_flag = pair.flag;
+-  return pair.amt >= 0 ? pair.amt : -pair.amt;
++  return pair.amt >= 0 ? +pair.amt : -pair.amt;
+ }
+ 
+ // Returns the new value of amt and not the carry flag,
+diff --git a/src/sm_a0.c b/src/sm_a0.c
+index cf717af..e6ce9fc 100644
+--- a/src/sm_a0.c
++++ b/src/sm_a0.c
+@@ -2508,7 +2508,7 @@ void ProcessEnemyPowerBombInteraction(void) {  // 0xA0A306
+       continue;
+     if (abs16(power_bomb_explosion_x_pos - E->x_pos) < rx && abs16(power_bomb_explosion_y_pos - E->y_pos) < ry) {
+       cur_enemy_index = i;
+-      uint16 func = ED->powerbomb_reaction ? ED->powerbomb_reaction : FUNC16(Enemy_NormalPowerBombAI_A0);
++      uint16 func = ED->powerbomb_reaction ? +ED->powerbomb_reaction : FUNC16(Enemy_NormalPowerBombAI_A0);
+       CallEnemyAi(E->bank << 16 | func);
+       E->properties |= 0x800;
+     }
+@@ -2600,7 +2600,7 @@ void NormalEnemyTouchAiSkipDeathAnim(void) {  // 0xA0A4A1
+       E->ai_handler_bits |= kEnemyAiBits_Hurt;
+       samus_invincibility_timer = 0;
+       samus_knockback_timer = 0;
+-      E->health = (int16)(E->health - dmg) < 0 ? 0 : (int16)(E->health - dmg);
++      E->health = (int16)(E->health - dmg) < 0 ? 0 : +(int16)(E->health - dmg);
+       QueueSfx2_Max1(0xB);
+     }
+   }
+@@ -2717,8 +2717,8 @@ uint16 NormalEnemyShotAiSkipDeathAnim(void) {  // 0xA0A6DE
+       varE32 = get_Vulnerability(r20)->power_bomb & 0x7F;
+     }
+ LABEL_9:;
+-    uint32 ttt = (uint32)(pd >> 1) * (uint32)varE32;
+-    uint16 r42 = ttt;
++    uint32 ttt; ttt = (uint32)(pd >> 1) * (uint32)varE32;
++    uint16 r42; r42 = ttt;
+     if (r42) {
+       pd = r42;
+       EnemyData *v10 = gEnemyData(cur_enemy_index);
+@@ -3050,7 +3050,7 @@ uint16 IsSamusWithinEnemy_X(uint16 k, uint16 a) {  // 0xA0AF0B
+ 
+ uint16 SignExtend8(uint16 a) {  // 0xA0AFEA
+   // not quite sign extend
+-  return (a & 0x80) ? a | 0xff00 : a;
++  return (a & 0x80) ? a | 0xff00 : +a;
+ }
+ 
+ uint16 Mult32(uint16 a) {  // 0xA0B002
+@@ -3058,7 +3058,7 @@ uint16 Mult32(uint16 a) {  // 0xA0B002
+ }
+ 
+ uint16 Abs16(uint16 a) {  // 0xA0B067
+-  return ((a & 0x8000) != 0) ? -a : a;
++  return ((a & 0x8000) != 0) ? -a : +a;
+ }
+ 
+ uint16 SubtractThenAbs16(uint16 k, uint16 j) {  // 0xA0B07D
+@@ -3735,7 +3735,7 @@ uint8 EnemyFunc_C8AD(uint16 k) {  // 0xA0C8AD
+     uint16 temp_collision_DD4 = (E->y_height + E->y_pos - 1) & 0xF;
+     uint16 temp_collision_DD6 = 16 * (BTS[cur_block_index] & 0x1F);
+     if ((BTS[cur_block_index] & 0x80) == 0) {
+-      uint16 j = (BTS[cur_block_index] & 0x40) != 0 ? E->x_pos ^ 0xF : E->x_pos;
++      uint16 j = (BTS[cur_block_index] & 0x40) != 0 ? E->x_pos ^ 0xF : +E->x_pos;
+       int16 v4 = (kAlignYPos_Tab0[temp_collision_DD6 + (j & 0xF)] & 0x1F) - temp_collision_DD4 - 1;
+       if (v4 < 0)
+         E->y_pos += v4;
+@@ -3747,7 +3747,7 @@ uint8 EnemyFunc_C8AD(uint16 k) {  // 0xA0C8AD
+     uint16 temp_collision_DD4 = (E->y_pos - E->y_height) & 0xF ^ 0xF;
+     uint16 temp_collision_DD6 = 16 * (BTS[cur_block_index] & 0x1F);
+     if (BTS[cur_block_index] & 0x80) {
+-      uint16 j = (BTS[cur_block_index] & 0x40) != 0 ? E->x_pos ^ 0xF : E->x_pos;
++      uint16 j = (BTS[cur_block_index] & 0x40) != 0 ? E->x_pos ^ 0xF : +E->x_pos;
+       int16 v7 = (kAlignYPos_Tab0[temp_collision_DD6 + (j & 0xF)] & 0x1F) - temp_collision_DD4 - 1;
+       if (v7 < 0)
+         E->y_pos -= v7;
+diff --git a/src/sm_a2.c b/src/sm_a2.c
+index 3a51484..f423fa3 100644
+--- a/src/sm_a2.c
++++ b/src/sm_a2.c
+@@ -504,7 +504,7 @@ void MaridiaBeybladeTurtle_Func8(uint16 k) {  // 0xA28FEB
+     MaridiaBeybladeTurtle_Func6(k);
+     AddToHiLo(&E->mte_var_E, &E->mte_var_03, __PAIR32__(E->mte_var_02, E->mte_var_01));
+     if ((int16)(abs16(E->mte_var_E) - g_word_A28D5E) >= 0)
+-      E->mte_var_E = (E->mte_var_E & 0x8000) != 0 ? -g_word_A28D5E : g_word_A28D5E;
++      E->mte_var_E = (E->mte_var_E & 0x8000) != 0 ? -g_word_A28D5E : +g_word_A28D5E;
+   }
+ }
+ 
+diff --git a/src/sm_a3.c b/src/sm_a3.c
+index f01ac67..a45c5dc 100644
+--- a/src/sm_a3.c
++++ b/src/sm_a3.c
+@@ -1555,7 +1555,7 @@ void MaridiaRefillCandy_Func_3(uint16 k) {  // 0xA3B4D6
+   Enemy_MaridiaRefillCandy *E = Get_MaridiaRefillCandy(k);
+   int v2 = E->mrcy_var_00 >> 1;
+   int32 v = __PAIR32__(g_word_A3B415[v2], g_word_A3B415[v2 + 1]);
+-  AddToHiLo(&E->base.x_pos, &E->base.x_subpos, E->mrcy_var_D ? v : -v);
++  AddToHiLo(&E->base.x_pos, &E->base.x_subpos, E->mrcy_var_D ? +v : -v);
+   if (!CheckIfEnemyIsOnScreen()) {
+     MaridiaRefillCandy_Func_4();
+     return;
+diff --git a/src/sm_a6.c b/src/sm_a6.c
+index 8ab058a..a320198 100644
+--- a/src/sm_a6.c
++++ b/src/sm_a6.c
+@@ -1459,7 +1459,7 @@ void CeresRidley_Func_13(void) {  // 0xA6A782
+   uint16 v1 = abs16(E->cry_var_C);
+   if (v1 < 0x80)
+     v1 = 128;
+-  E->cry_var_C = sign16(E->cry_var_C) ? -v1 : v1;
++  E->cry_var_C = sign16(E->cry_var_C) ? -v1 : +v1;
+   Ridley_Func_106(0, 0, E->base.x_pos, 88);
+   if (sign16(E->base.y_pos - 80)) {
+     uint16 v3 = E->cry_var_00 + 1;
+@@ -1688,7 +1688,7 @@ void CeresRidley_Func_28(void) {  // 0xA6AABD
+ 
+ static uint16 CeresMult(uint16 a, uint16 b) {
+   uint16 r = abs16(a) * b >> 8;
+-  return sign16(a) ? -r : r;
++  return sign16(a) ? -r : +r;
+ }
+ 
+ void CeresRidley_Func_29(void) {  // 0xA6AB5F
+@@ -1857,7 +1857,7 @@ void Ridley_Func_6(void) {  // 0xA6B3F8
+   v2 = 192;
+   if (E->ridley_var_10)
+     v2 = 96;
+-  Rect16U rect = { v2, 256, 8, 8 };
++  Rect16U rect; rect = (Rect16U){ v2, 256, 8, 8 };
+   Ridley_Func_104_0(0, Ridley_Func_7(), rect.x, rect.y);
+   if (!Shitroid_Func_2(0, rect)) {
+ LABEL_5:
+@@ -2202,7 +2202,7 @@ void Ridley_Func_29(void) {  // 0xA6B90F
+   E->ridley_var_C = *(uint16 *)&RomPtr_A6(r20)[v2];
+   const uint8 *v4 = RomPtr_A6(r18);
+   uint16 t = *(uint16 *)&v4[v2];
+-  E->ridley_var_B = sign16(E->ridley_var_B) ? -t : t;
++  E->ridley_var_B = sign16(E->ridley_var_B) ? -t : +t;
+ }
+ 
+ void Ridley_Func_30(void) {  // 0xA6B9E1
+@@ -2211,7 +2211,7 @@ void Ridley_Func_30(void) {  // 0xA6B9E1
+   if (ridley_var_14) {
+     int16 v2 = abs16(ridley_var_14) - 4;
+     if (v2 >= 0)
+-      v3 = sign16(ridley_var_14) ? -v2 : v2;
++      v3 = sign16(ridley_var_14) ? -v2 : +v2;
+     else
+       v3 = 0;
+     E->ridley_var_14 = v3;
+@@ -2220,7 +2220,7 @@ void Ridley_Func_30(void) {  // 0xA6B9E1
+   if (ridley_var_15) {
+     int16 v5 = abs16(ridley_var_15) - 4;
+     if (v5 >= 0)
+-      v6 = sign16(ridley_var_15) ? -v5 : v5;
++      v6 = sign16(ridley_var_15) ? -v5 : +v5;
+     else
+       v6 = 0;
+     E->ridley_var_15 = v6;
+@@ -3055,7 +3055,7 @@ void RidleysExplosion_Main(void) {  // 0xA6C8D4
+   v2 = abs16(E->ren_var_B) - 4;
+   if (v2 < 0)
+     v2 = 0;
+-  E->ren_var_B = sign16(E->ren_var_B) ? -v2 : v2;
++  E->ren_var_B = sign16(E->ren_var_B) ? -v2 : +v2;
+   E->ren_var_C += 4;
+   MoveEnemyWithVelocity();
+   if ((--E->ren_var_F & 0x8000) != 0)
+@@ -3868,20 +3868,20 @@ void Ridley_Func_107(uint16 k, uint16 r18, uint16 r24) {  // 0xA6D6A6
+     return;
+   if (v2 >= 0) {
+     uint16 RegWord = SnesDivide(v2, r24);
+-    uint16 r22 = RegWord = RegWord ? RegWord : 1;
++    uint16 r22 = RegWord = RegWord ? +RegWord : 1;
+     int16 s = E->ridley_var_B;
+     if (s >= 0)
+       s -= 2 * RegWord;
+     s -= RegWord;
+-    E->ridley_var_B = sign16(s + 1280) ? -1280 : s;
++    E->ridley_var_B = sign16(s + 1280) ? -1280 : +s;
+   } else {
+     uint16 v3 = SnesDivide(r18 - E->base.x_pos, r24);
+-    uint16 r22 = v3 ? v3 : 1;
++    uint16 r22 = v3 ? +v3 : 1;
+     int16 s = E->ridley_var_B;
+     if (s < 0)
+       s += 2 * r22;
+     s += r22;
+-    E->ridley_var_B = !sign16(s - 1280) ? 1280 : s;
++    E->ridley_var_B = !sign16(s - 1280) ? 1280 : +s;
+   }
+ }
+ 
+diff --git a/src/sm_a7.c b/src/sm_a7.c
+index 65b0721..3a7ed32 100644
+--- a/src/sm_a7.c
++++ b/src/sm_a7.c
+@@ -663,9 +663,9 @@ void Kraid_Shot_Mouth(void) {  // 0xA7AFAA
+   v3 = 0;
+   const uint8 *v5;
+   v5 = RomPtr_A7(v4);
+-  uint16 r22 = E->base.x_pos + GET_WORD(v5);
+-  uint16 r20 = E->base.y_pos + GET_WORD(v5 + 2);
+-  uint16 r18 = E->base.y_pos + GET_WORD(v5 + 6);
++  uint16 r22; r22 = E->base.x_pos + GET_WORD(v5);
++  uint16 r20; r20 = E->base.y_pos + GET_WORD(v5 + 2);
++  uint16 r18; r18 = E->base.y_pos + GET_WORD(v5 + 6);
+   if (projectile_counter) {
+     uint16 v6 = 2 * projectile_counter;
+     while (1) {
+@@ -3121,7 +3121,7 @@ uint16 Phantoon_CalculateNthTransitionColorComponentFromXtoY(uint16 a, uint16 k,
+   uint16 r18 = j - k;
+   uint8 v6 = abs16(r18);
+   uint16 RegWord = SnesDivide(v6 << 8, LOBYTE(E->phant_var_D) - r20 + 1);
+-  r18 = sign16(r18) ? -RegWord : RegWord;
++  r18 = sign16(r18) ? -RegWord : +RegWord;
+   return (uint16)(r18 + swap16(k)) >> 8;
+ }
+ 
+diff --git a/src/sm_a8.c b/src/sm_a8.c
+index 044d980..63c8baa 100644
+--- a/src/sm_a8.c
++++ b/src/sm_a8.c
+@@ -728,7 +728,7 @@ void WreckedShipGhost_Func_4(uint16 k) {  // 0xA89C69
+ void WreckedShipGhost_Func_5(uint16 k) {  // 0xA89C8A
+   Enemy_WreckedShipGhost *E = Get_WreckedShipGhost(k);
+   AddToHiLo(&E->base.y_pos, &E->base.y_subpos, __PAIR32__(E->wsgt_var_02, E->wsgt_var_01));
+-  AddToHiLo(&E->wsgt_var_02, &E->wsgt_var_01, ((int16)(E->base.y_pos - E->wsgt_var_00) < 0) ? g_word_A89AA0 : -g_word_A89AA0);
++  AddToHiLo(&E->wsgt_var_02, &E->wsgt_var_01, ((int16)(E->base.y_pos - E->wsgt_var_00) < 0) ? +g_word_A89AA0 : -g_word_A89AA0);
+   if (--E->wsgt_var_B == 0) {
+     E->wsgt_var_A = FUNC16(WreckedShipGhost_Func_4);
+     E->base.properties |= kEnemyProps_Tangible;
+diff --git a/src/sm_a9.c b/src/sm_a9.c
+index b45c686..8b96f30 100644
+--- a/src/sm_a9.c
++++ b/src/sm_a9.c
+@@ -4039,7 +4039,7 @@ void ShitroidInCutscene_AccelerateDownwards(uint16 k) {  // 0xA9CE40
+   v2 = abs16(E->sice_var_B) - 32;
+   if (v2 < 0)
+     v2 = 0;
+-  E->sice_var_B = sign16(E->sice_var_B) ? -v2 : v2;
++  E->sice_var_B = sign16(E->sice_var_B) ? -v2 : +v2;
+   E->sice_var_C += 2;
+ }
+ 
+diff --git a/src/sm_aa.c b/src/sm_aa.c
+index 1230237..a04ac00 100644
+--- a/src/sm_aa.c
++++ b/src/sm_aa.c
+@@ -1308,7 +1308,7 @@ void Shaktool_DCAC(uint16 k) {  // 0xAADCAC
+   } else {
+     shakto_var_C = E->shakt_var_C;
+   }
+-  E->shakt_var_B += sign16(E->shakt_parameter_1) ? -shakto_var_C : shakto_var_C;
++  E->shakt_var_B += sign16(E->shakt_parameter_1) ? -shakto_var_C : +shakto_var_C;
+ }
+ 
+ void Shaktool_DCD7(uint16 k) {  // 0xAADCD7
+diff --git a/src/sm_b2.c b/src/sm_b2.c
+index 6a45aaa..98d4707 100644
+--- a/src/sm_b2.c
++++ b/src/sm_b2.c
+@@ -60,7 +60,7 @@ void WalkingSpacePirates_87C8(void) {  // 0xB287C8
+ 
+   if (Get_SpacePirates(cur_enemy_index)->base.enemy_ptr != addr_kEnemyDef_F593)
+     goto LABEL_2;
+-  uint16 r18 = projectile_type[collision_detection_index];
++  uint16 r18; r18 = projectile_type[collision_detection_index];
+   if (sign16((r18 & kProjectileType_TypeMask) - kProjectileType_PowerBomb)) {
+     uint16 enemy_ptr;
+     uint16 vulnerability_ptr;
+@@ -68,7 +68,7 @@ void WalkingSpacePirates_87C8(void) {  // 0xB287C8
+     vulnerability_ptr = get_EnemyDef_A2(enemy_ptr)->vulnerability_ptr;
+     if (!vulnerability_ptr)
+       vulnerability_ptr = addr_stru_B4EC1C;
+-    uint16 r20 = vulnerability_ptr;
++    uint16 r20; r20 = vulnerability_ptr;
+     if ((r18 & kProjectileType_TypeMask) != 0) {
+       if ((r18 & kProjectileType_TypeMask) != kProjectileType_Missile && (r18 & kProjectileType_TypeMask) != kProjectileType_SuperMissile)
+         goto LABEL_2;
+diff --git a/src/sm_cpu_infra.c b/src/sm_cpu_infra.c
+index 6b48a43..aac493e 100644
+--- a/src/sm_cpu_infra.c
++++ b/src/sm_cpu_infra.c
+@@ -14,7 +14,11 @@
+ void RtlRunFrameCompare(uint16 input, int run_what);
+ 
+ enum RunMode { RM_BOTH, RM_MINE, RM_THEIRS };
++#ifdef N64
++uint8 g_runmode = RM_MINE;  // only run the C code; comparing against the emulated 65816 is too slow on N64
++#else
+ uint8 g_runmode = RM_BOTH;
++#endif
+ 
+ extern int g_got_mismatch_count;
+ 
+@@ -40,7 +44,16 @@ typedef struct Snapshot {
+   uint16 oam[0x120];
+ } Snapshot;
+ 
++#ifdef N64
++// Only used by the side-by-side compare mode (RM_BOTH); allocated on first use
++// so the N64 build doesn't spend ~600 KB of its 8 MB on them.
++static Snapshot *g_snapshots_n64;
++#define g_snapshot_mine (g_snapshots_n64 ? g_snapshots_n64 : (g_snapshots_n64 = (Snapshot *)calloc(3, sizeof(Snapshot))))[0]
++#define g_snapshot_theirs (g_snapshots_n64 ? g_snapshots_n64 : (g_snapshots_n64 = (Snapshot *)calloc(3, sizeof(Snapshot))))[1]
++#define g_snapshot_before (g_snapshots_n64 ? g_snapshots_n64 : (g_snapshots_n64 = (Snapshot *)calloc(3, sizeof(Snapshot))))[2]
++#else
+ static Snapshot g_snapshot_mine, g_snapshot_theirs, g_snapshot_before;
++#endif
+ static uint32 hookmode, hookcnt, hookadr;
+ static uint32 hooked_func_pc;
+ static uint8 hook_orgbyte[1024];
+@@ -443,7 +456,7 @@ int RunPatchBugHook(uint32 addr) {
+   return -1;
+ }
+ 
+-int CpuOpcodeHook(uint32 addr) {
++int CpuOpcodeHook(uint32_t addr) {  // std types: called from snes/cpu.c
+   for (size_t i = 0; i != arraysize(kPatchedCarrys); i++) {
+     if (addr == kPatchedCarrys[i])
+       return kPatchedCarrysOrg[i];
+@@ -529,7 +542,7 @@ static void VerifySnapshotsEq(Snapshot *b, Snapshot *a, Snapshot *prev) {
+         if (++j < 256) {
+           if (((i & 1) == 0 || i < 0x10000) && a->ram[i + 1] != b->ram[i + 1]) {
+             fprintf(stderr, "0x%.6X: %.4X != %.4X (%.4X)\n", (int)i,
+-                    WORD(b->ram[i]), WORD(a->ram[i]), WORD(prev->ram[i]));
++                    +WORD(b->ram[i]), +WORD(a->ram[i]), +WORD(prev->ram[i]));
+             i++, j++;
+           } else {
+             fprintf(stderr, "0x%.6X: %.2X != %.2X (%.2X)\n", (int)i, b->ram[i], a->ram[i], prev->ram[i]);
+@@ -550,7 +563,7 @@ static void VerifySnapshotsEq(Snapshot *b, Snapshot *a, Snapshot *prev) {
+         if (++j < 128) {
+           if ((i & 1) == 0 && a->sram[i + 1] != b->sram[i + 1]) {
+             fprintf(stderr, "0x%.6X: %.4X != %.4X (%.4X)\n", (int)i,
+-                    WORD(b->sram[i]), WORD(a->sram[i]), WORD(prev->sram[i]));
++                    +WORD(b->sram[i]), +WORD(a->sram[i]), +WORD(prev->sram[i]));
+             i++, j++;
+           } else {
+             fprintf(stderr, "0x%.6X: %.2X != %.2X (%.2X)\n", (int)i, b->sram[i], a->sram[i], prev->sram[i]);
+@@ -567,7 +580,7 @@ static void VerifySnapshotsEq(Snapshot *b, Snapshot *a, Snapshot *prev) {
+     fprintf(stderr, "@%d: VRAM compare failed (mine != theirs, prev):\n", snes_frame_counter);
+     for (size_t i = 0, j = 0; i < 0x8000; i++) {
+       if (a->vram[i] != b->vram[i]) {
+-        fprintf(stderr, "0x%.6X: %.4X != %.4X (%.4X)\n", (int)i, b->vram[i], a->vram[i], prev->vram[i]);
++        fprintf(stderr, "0x%.6X: %.4X != %.4X (%.4X)\n", (int)i, +b->vram[i], +a->vram[i], +prev->vram[i]);
+         g_fail = true;
+         if (++j >= 32)
+           break;
+@@ -578,7 +591,7 @@ static void VerifySnapshotsEq(Snapshot *b, Snapshot *a, Snapshot *prev) {
+     fprintf(stderr, "@%d: VRAM OAM compare failed (mine != theirs, prev):\n", snes_frame_counter);
+     for (size_t i = 0, j = 0; i < 0x120; i++) {
+       if (a->oam[i] != b->oam[i]) {
+-        fprintf(stderr, "0x%.6X: %.4X != %.4X (%.4X)\n", (int)i, b->oam[i], a->oam[i], prev->oam[i]);
++        fprintf(stderr, "0x%.6X: %.4X != %.4X (%.4X)\n", (int)i, +b->oam[i], +a->oam[i], +prev->oam[i]);
+         g_fail = true;
+         if (++j >= 16)
+           break;
+@@ -670,6 +683,11 @@ int RunAsmCode(uint32 pc, uint16 a, uint16 x, uint16 y, int flags) {
+   return g_calling_asm_from_c_ret;
+ }
+ 
++#ifdef N64
++uint8_t *N64_ReadRom(const char *name, size_t *length);  // platform/n64/n64_main.c
++#define ReadWholeFile N64_ReadRom
++#define free(x) ((void)(x))  // N64_ReadRom's buffer becomes the cartridge ROM; keep it
++#endif
+ static bool loadRom(const char *name, Snes *snes) {
+   size_t length = 0;
+   uint8_t *file = NULL;
+@@ -682,6 +700,10 @@ static bool loadRom(const char *name, Snes *snes) {
+   free(file);
+   return result;
+ }
++#ifdef N64
++#undef free
++#undef ReadWholeFile
++#endif
+ 
+ void PatchBytes(uint32 addr, const uint8 *value, size_t n) {
+   for(size_t i = 0; i != n; i++)
+@@ -901,7 +923,7 @@ Snes *SnesInit(const char *filename) {
+       kPatchedCarrysOrg[i] = t;
+       FixupCarry(kPatchedCarrys[i]);
+     } else {
+-      printf("0x%x double patched!\n", kPatchedCarrys[i]);
++      printf("0x%x double patched!\n", +kPatchedCarrys[i]);
+     }
+   }
+ 
+@@ -944,9 +966,7 @@ void RunOneFrameOfGame_Emulated(void) {
+ void DrawFrameToPpu(void) {
+   g_snes->hPos = g_snes->vPos = 0;
+   while (!g_snes->cpu->nmiWanted) {
+-    do {
+-      snes_handle_pos_stuff(g_snes);
+-    } while (g_snes->hPos != 0);
++    snes_runLine(g_snes);
+     if (g_snes->vIrqEnabled && (g_snes->vPos - 1) == g_snes->vTimer) {
+       Vector_IRQ();
+     }
+diff --git a/src/sm_rtl.c b/src/sm_rtl.c
+index cea7f4c..229267a 100644
+--- a/src/sm_rtl.c
++++ b/src/sm_rtl.c
+@@ -187,7 +187,7 @@ void StateRecorder_Load(StateRecorder *sr, FILE *f, bool replay_mode) {
+   if (hdr[0] != 2) {
+     hdr[8] = hdr[7];
+     hdr[7] = hdr[5] >> 1;
+-    hdr[5] = (hdr[5] & 1) ? hdr[6] : 0;
++    hdr[5] = (hdr[5] & 1) ? +hdr[6] : 0;
+   } else if (hdr[0] == 2) {
+     ReadFromFile(f, hdr + 8, 8 * sizeof(uint32));
+ 
+@@ -409,7 +409,7 @@ bool RtlRunFrame(int inputs) {
+     } else {
+       if (bug_fix_counter != kCurrentBugFixCounter) {
+         if (g_debug_flag)
+-          printf("bug_fix_counter %d => %d\n", bug_fix_counter, kCurrentBugFixCounter);
++          printf("bug_fix_counter %d => %d\n", +bug_fix_counter, +kCurrentBugFixCounter);
+         if (bug_fix_counter < kCurrentBugFixCounter) {
+           bug_fix_counter = kCurrentBugFixCounter;
+           StateRecorder_RecordPatchByte(&state_recorder, (uint8 *)&bug_fix_counter - g_ram, (uint8 *)&bug_fix_counter, 2);
+@@ -535,7 +535,7 @@ uint16 SnesDivide(uint16 a, uint8 b) {
+ }
+ 
+ uint16 SnesModulus(uint16 a, uint8 b) {
+-  return (b == 0) ? a : a % b;
++  return (b == 0) ? +a : a % b;
+ }
+ 
+ 
+@@ -567,7 +567,7 @@ enum {
+ static struct ApuWriteEnt g_apu_write_ents[kApuMaxQueueSize], g_apu_write;
+ static uint8 g_apu_write_ent_pos, g_apu_queue_size, g_apu_time_since_empty;
+ 
+-void RtlApuWrite(uint32 adr, uint8 val) {
++void RtlApuWrite(uint32_t adr, uint8 val) {
+   assert(adr >= APUI00 && adr <= APUI03);
+ 
+   if (is_uploading_apu) {
+@@ -675,7 +675,7 @@ void RtlSaveMusicStateToRam_Locked(void) {
+   }
+ }
+ 
+-void RtlRenderAudio(int16 *audio_buffer, int samples, int channels) {
++void RtlRenderAudio(int16_t *audio_buffer, int samples, int channels) {
+   assert(channels == 2);
+   RtlApuLock();
+ 
+@@ -711,6 +711,19 @@ void RtlCheat(char c) {
+   }
+ }
+ 
++#ifdef N64
++void N64_ReadSram(uint8 *sram, size_t size);
++void N64_WriteSram(const uint8 *sram, size_t size);
++void RtlReadSram(void) {
++  N64_ReadSram(g_sram, 8192);
++  RtlSynchronizeWholeState();
++  ByteArray_Resize(&state_recorder.base_snapshot, 8192);
++  memcpy(state_recorder.base_snapshot.data, g_sram, 8192);
++}
++void RtlWriteSram(void) {
++  N64_WriteSram(g_sram, 8192);
++}
++#else
+ void RtlReadSram(void) {
+   FILE *f = fopen("saves/sm.srm", "rb");
+   if (f) {
+@@ -733,3 +746,4 @@ void RtlWriteSram(void) {
+     fprintf(stderr, "Unable to write saves/sm.srm\n");
+   }
+ }
++#endif  // N64
+diff --git a/src/sm_rtl.h b/src/sm_rtl.h
+index 4ed655c..e25b64f 100644
+--- a/src/sm_rtl.h
++++ b/src/sm_rtl.h
+@@ -4,7 +4,7 @@
+ #include <stdio.h>
+ 
+ extern uint8 g_ram[0x20000];
+-extern void RtlApuWrite(uint32 adr, uint8 val);
++extern void RtlApuWrite(uint32_t adr, uint8 val);  // std types: called from snes/ (native types)
+ extern int snes_frame_counter;
+ 
+ extern uint8 *g_sram;
+@@ -112,7 +112,7 @@ void RtlCheat(char c);
+ void RtlApuLock();
+ void RtlApuUnlock();
+ void RtlApuUpload(const uint8 *p);
+-void RtlRenderAudio(int16 *audio_buffer, int samples, int channels);
++void RtlRenderAudio(int16_t *audio_buffer, int samples, int channels);
+ void RtlPushApuState();
+ bool RtlRunFrame(int inputs);
+ void RtlReadSram();
+diff --git a/src/snes/cart.c b/src/snes/cart.c
+index 3b96db5..2c5d1db 100644
+--- a/src/snes/cart.c
++++ b/src/snes/cart.c
+@@ -37,9 +37,15 @@ void cart_saveload(Cart *cart, SaveLoadFunc *func, void *ctx) {
+ 
+ void cart_load(Cart* cart, int type, uint8_t* rom, int romSize, int ramSize) {
+   cart->type = type;
++#ifndef N64
+   if(cart->rom != NULL) free(cart->rom);
++#endif
+   if(cart->ram != NULL) free(cart->ram);
++#ifdef N64
++  cart->rom = rom;  // take ownership, no copy
++#else
+   cart->rom = malloc(romSize);
++#endif
+   cart->romSize = romSize;
+   if(ramSize > 0) {
+     cart->ram = malloc(ramSize);
+@@ -48,7 +54,9 @@ void cart_load(Cart* cart, int type, uint8_t* rom, int romSize, int ramSize) {
+     cart->ram = NULL;
+   }
+   cart->ramSize = ramSize;
++#ifndef N64
+   memcpy(cart->rom, rom, romSize);
++#endif
+ }
+ 
+ uint8_t cart_read(Cart* cart, uint8_t bank, uint16_t adr) {
+diff --git a/src/snes/ppu.c b/src/snes/ppu.c
+index 95e5088..c306dd3 100644
+--- a/src/snes/ppu.c
++++ b/src/snes/ppu.c
+@@ -7,11 +7,27 @@
+ #include <stddef.h>
+ 
+ #include "ppu.h"
++#include "ppu_rsp.h"
++
++// Pixel packing. PC: 0x00RRGGBB. N64 with PPU_OUT16 (RSP renderer build):
++// RGBA5551, same as the RSP output. Older N64 32bpp build: 0xRRGGBBAA.
++#if defined(PPU_OUT16)
++typedef uint16_t PpuPixel;
++#define PIX(r, g, b) PPUR_PIX16(r, g, b)
++#elif defined(N64)
++typedef uint32_t PpuPixel;
++#define PIX(r, g, b) ((uint32)(r) << 24 | (uint32)(g) << 16 | (uint32)(b) << 8 | 0xff)
++#else
++typedef uint32_t PpuPixel;
++#define PIX(r, g, b) ((uint32)(r) << 16 | (uint32)(g) << 8 | (uint32)(b))
++#endif
+ #include "snes.h"
+ #include "../types.h"
+ typedef uint64_t uint64;
+ typedef uint32_t uint32;
+-typedef uint32_t uint;
++#ifndef N64
++typedef uint32_t uint;  // newlib already defines uint on N64
++#endif
+ typedef uint16_t uint16;
+ typedef int16_t int16;
+ typedef uint8_t uint8;
+@@ -245,10 +261,15 @@ void ppu_handleVblank(Ppu* ppu) {
+ }
+ 
+ static inline void ClearBackdrop(PpuPixelPrioBufs *buf) {
++  // buf->data is 8-byte aligned (see ppu.h), so 64-bit stores are safe on MIPS too.
+   for (size_t i = 0; i != arraysize(buf->data); i += 4)
+     *(uint64*)&buf->data[i] = 0x0500050005000500;
+ }
+ 
++// When set (test builds), captured lines are also drawn by the CPU so the two can be compared.
++bool g_ppu_rsp_also_draw;
++void PpuRsp_NoteVramWrite(Ppu *ppu);
++
+ void ppu_runLine(Ppu* ppu, int line) {
+   if(line == 0) {
+     // pre-render line
+@@ -257,7 +278,10 @@ void ppu_runLine(Ppu* ppu, int line) {
+     ppu->rangeOver = false;
+     ppu->timeOver = false;
+     ppu->evenFrame = !ppu->evenFrame;
+-  } else {  
++  } else {
++    // RSP renderer: record the line instead of drawing it (unless it needs the CPU).
++    if (PpuRsp_CaptureLine(ppu, line) && !g_ppu_rsp_also_draw)
++      return;
+     // Cache the brightness computation
+     if (ppu->brightness != ppu->lastBrightnessMult) {
+       uint8_t ppu_brightness = ppu->brightness;
+@@ -700,8 +724,13 @@ static void PpuDrawBackgrounds(Ppu *ppu, int y, bool sub) {
+ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
+   if (ppu->forcedBlank) {
+     uint8 *dst = &ppu->renderBuffer[(y - 1) * ppu->renderPitch];
+-    size_t n = sizeof(uint32) * (256 + ppu->extraLeftRight * 2);
+-    memset(dst, 0, n);
++#if defined(PPU_OUT16)
++    PpuPixel *pd = (PpuPixel *)dst;   // same black as the RSP renderer
++    for (int i = 0; i < 256 + ppu->extraLeftRight * 2; i++)
++      pd[i] = PIX(0, 0, 0);
++#else
++    memset(dst, 0, sizeof(PpuPixel) * (256 + ppu->extraLeftRight * 2));
++#endif
+     return;
+   }
+ 
+@@ -736,7 +765,7 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
+   uint32 cw_clip_math = ((cwin.bits & kCwBitsMod[ppu->clipMode]) ^ kCwBitsMod[ppu->clipMode + 4]) |
+     ((cwin.bits & kCwBitsMod[ppu->preventMathMode]) ^ kCwBitsMod[ppu->preventMathMode + 4]) << 8;
+ 
+-  uint32 *dst = (uint32*)&ppu->renderBuffer[(y - 1) * ppu->renderPitch], *dst_org = dst;
++  PpuPixel *dst = (PpuPixel*)&ppu->renderBuffer[(y - 1) * ppu->renderPitch], *dst_org = dst;
+ 
+   dst += (ppu->extraLeftRight - ppu->extraLeftCur);
+ 
+@@ -752,9 +781,9 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
+       uint32 i = left;
+       do {
+         uint32 color = ppu->cgram[ppu->bgBuffers[0].data[i] & 0xff];
+-        dst[0] = ppu->brightnessMult[color & clip_color_mask] << 16 |
+-          ppu->brightnessMult[(color >> 5) & clip_color_mask] << 8 |
+-          ppu->brightnessMult[(color >> 10) & clip_color_mask];
++        dst[0] = PIX(ppu->brightnessMult[color & clip_color_mask],
++          ppu->brightnessMult[(color >> 5) & clip_color_mask],
++          ppu->brightnessMult[(color >> 10) & clip_color_mask]);
+       } while (dst++, ++i < right);
+     } else {
+       uint8 *half_color_map = ppu->halfColor ? ppu->brightnessMultHalf : ppu->brightnessMult;
+@@ -789,7 +818,7 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
+             b += b2;
+           }
+         }
+-        dst[0] = color_map[b] | color_map[g] << 8 | color_map[r] << 16;
++        dst[0] = PIX(color_map[r], color_map[g], color_map[b]);
+       } while (dst++, ++i < right);
+     }
+   } while (cw_clip_math >>= 1, ++windex < cwin.nr);
+@@ -851,11 +880,10 @@ static void ppu_handlePixel(Ppu* ppu, int x, int y) {
+     }
+   }
+   int row = y - 1;
+-  uint8 *pixelBuffer = (uint8*) &ppu->renderBuffer[row * ppu->renderPitch + (x + ppu->extraLeftRight) * 4];
+-  pixelBuffer[0] = ((b << 3) | (b >> 2)) * ppu->brightness / 15;
+-  pixelBuffer[1] = ((g << 3) | (g >> 2)) * ppu->brightness / 15;
+-  pixelBuffer[2] = ((r << 3) | (r >> 2)) * ppu->brightness / 15;
+-  pixelBuffer[3] = 0;
++  uint8 *pixelBuffer = (uint8*) &ppu->renderBuffer[row * ppu->renderPitch + (x + ppu->extraLeftRight) * sizeof(PpuPixel)];
++  *(PpuPixel *)pixelBuffer = PIX(((r << 3) | (r >> 2)) * ppu->brightness / 15,
++                               ((g << 3) | (g >> 2)) * ppu->brightness / 15,
++                               ((b << 3) | (b >> 2)) * ppu->brightness / 15);
+ }
+ 
+ static int ppu_getPixel(Ppu* ppu, int x, int y, bool sub, int* r, int* g, int* b) {
+@@ -1323,6 +1351,7 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
+       break;
+     }
+     case 0x01: {
++      PpuRsp_NoteObjChange(ppu);
+       ppu->objSize = val >> 5;
+       ppu->objTileAdr1 = (val & 7) << 13;
+       ppu->objTileAdr2 = ppu->objTileAdr1 + (((val & 0x18) + 8) << 9);
+@@ -1344,6 +1373,7 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
+       break;
+     }
+     case 0x04: {
++      PpuRsp_NoteObjChange(ppu);
+       if(ppu->oamInHigh) {
+         ppu->highOam[((ppu->oamAdr & 0xf) << 1) | ppu->oamSecondWrite] = val;
+         if(ppu->oamSecondWrite) {
+@@ -1449,12 +1479,14 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
+     case 0x18: {
+       // TODO: vram access during rendering (also cgram and oam)
+       uint16_t vramAdr = ppu_getVramRemap(ppu);
++      PpuRsp_NoteVramWrite(ppu);
+       ppu->vram[vramAdr & 0x7fff] = (ppu->vram[vramAdr & 0x7fff] & 0xff00) | val;
+       if(!ppu->vramIncrementOnHigh) ppu->vramPointer += ppu->vramIncrement;
+       break;
+     }
+     case 0x19: {
+       uint16_t vramAdr = ppu_getVramRemap(ppu);
++      PpuRsp_NoteVramWrite(ppu);
+       ppu->vram[vramAdr & 0x7fff] = (ppu->vram[vramAdr & 0x7fff] & 0x00ff) | (val << 8);
+       if(ppu->vramIncrementOnHigh) ppu->vramPointer += ppu->vramIncrement;
+       break;
+@@ -1489,6 +1521,7 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
+       if(!ppu->cgramSecondWrite) {
+         ppu->cgramBuffer = val;
+       } else {
++        PpuRsp_NoteCgramWrite(ppu);
+         ppu->cgram[ppu->cgramPointer++] = (val << 8) | ppu->cgramBuffer;
+       }
+       ppu->cgramSecondWrite = !ppu->cgramSecondWrite;
+@@ -1601,6 +1634,7 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
+       break;
+     }
+     case 0x33: {
++      PpuRsp_NoteObjChange(ppu);
+       ppu->interlace = val & 0x1;
+       ppu->objInterlace = val & 0x2;
+       ppu->overscan = val & 0x4;
+diff --git a/src/snes/ppu.h b/src/snes/ppu.h
+index 703db86..06f2ec4 100644
+--- a/src/snes/ppu.h
++++ b/src/snes/ppu.h
+@@ -31,7 +31,7 @@ typedef uint16_t PpuZbufType;
+ 
+ typedef struct PpuPixelPrioBufs {
+   // This holds the prio in the upper 8 bits and the color in the lower 8 bits.
+-  PpuZbufType data[kPpuXPixels];
++  PpuZbufType data[kPpuXPixels] __attribute__((aligned(8)));  // 8-aligned: cleared with 64-bit stores
+ } PpuPixelPrioBufs;
+ 
+ enum {
+diff --git a/src/snes/ppu_rsp.c b/src/snes/ppu_rsp.c
+new file mode 100644
+index 0000000..6b42b8f
+--- /dev/null
++++ b/src/snes/ppu_rsp.c
+@@ -0,0 +1,567 @@
++// Frame capture for the RSP renderer, and the C reference renderer that draws
++// a captured frame. The reference renderer is a line-by-line port of the mode-1
++// path of PpuDrawWholeLine() (ppu.c) and must produce identical pixels; it is
++// also the specification the RSP microcode is checked against.
++#include <string.h>
++#include <stdlib.h>
++#include "ppu.h"
++#include "ppu_rsp.h"
++
++#ifdef __cplusplus
++#define PPUR_STATIC_ASSERT static_assert
++#else
++#define PPUR_STATIC_ASSERT _Static_assert
++#endif
++
++#ifndef countof
++#define countof(a) (sizeof(a) / sizeof((a)[0]))
++#endif
++
++PPUR_STATIC_ASSERT(sizeof(PpuLineRec) == 64, "PpuLineRec must be 64 bytes");
++PPUR_STATIC_ASSERT(sizeof(PpuSliver) == 8, "PpuSliver must be 8 bytes");
++PPUR_STATIC_ASSERT(sizeof(PpuTileBlock) == 1192, "PpuTileBlock must be 1192 bytes");
++PPUR_STATIC_ASSERT(sizeof(PpuFrame) % 16 == 0, "PpuFrame arrays must keep 16-byte alignment");
++
++static const int kSpriteSizes[8][2] = {
++  {8, 16}, {8, 32}, {8, 64}, {16, 32}, {16, 64}, {32, 64}, {16, 32}, {16, 32}
++};
++
++#define SPRITE_PRIO_TO_PRIO(prio, level6) (((prio) * 4 + 2) * 16 + 4 + (level6 ? 2 : 0))
++
++// ---------------------------------------------------------------------------
++// Capture state
++// ---------------------------------------------------------------------------
++static struct {
++  Ppu *ppu;               // PPU being captured (NULL = capture off)
++  PpuFrame *frame;
++  bool cgramDirty;        // CGRAM written since the last snapshot
++  bool objDirty;          // OAM / OBSEL / interlace changed: rebuild buckets
++  bool vramWritten;       // VRAM written after the first captured line
++  bool linesStarted;
++  bool vramSnapped;       // frame->vram already holds the pre-write VRAM
++  uint32_t blockKey[3];   // tile set of the last block built per layer
++  uint16_t blockIdx[3];
++  uint32_t lineMask[256][4];  // per evaluated line: which of the 128 sprites cover it
++} g_cap;
++
++static uint8_t kReverseByte[256];
++
++void PpuRsp_BeginFrame(Ppu *ppu, PpuFrame *frame) {
++  if (!kReverseByte[1]) {
++    for (int i = 0; i < 256; i++) {
++      int r = 0;
++      for (int b = 0; b < 8; b++) if (i & (1 << b)) r |= 0x80 >> b;
++      kReverseByte[i] = r;
++    }
++  }
++  g_cap.ppu = ppu;
++  g_cap.frame = frame;
++  g_cap.cgramDirty = true;
++  g_cap.objDirty = true;
++  g_cap.vramWritten = false;
++  g_cap.linesStarted = false;
++  g_cap.vramSnapped = false;
++  frame->numLines = 0;
++  frame->numCgrams = 0;
++  frame->numSlivers = 0;
++  frame->numBlocks = 0;
++  frame->overflow = false;
++  for (int i = 0; i < 3; i++) { g_cap.blockKey[i] = ~0u; g_cap.blockIdx[i] = PPUR_NO_BLOCK; }
++  memset(frame->lines, 0, sizeof(frame->lines));
++}
++
++void PpuRsp_EndFrame(Ppu *ppu) {
++  if (g_cap.ppu != ppu || !g_cap.frame)
++    return;
++  if (!g_cap.vramSnapped)
++    memcpy(g_cap.frame->vram, ppu->vram, sizeof(ppu->vram));
++  g_cap.ppu = NULL;
++}
++
++void PpuRsp_NoteCgramWrite(Ppu *ppu) {
++  if (g_cap.ppu == ppu) g_cap.cgramDirty = true;
++}
++
++void PpuRsp_NoteObjChange(Ppu *ppu) {
++  if (g_cap.ppu == ppu) g_cap.objDirty = true;
++}
++
++void PpuRsp_NoteVramWrite(Ppu *ppu) {
++  if (g_cap.ppu == ppu && g_cap.linesStarted && !g_cap.vramSnapped) {
++    // Lines captured so far must see VRAM as it was before this write.
++    // ppu_write calls this before modifying VRAM.
++    memcpy(g_cap.frame->vram, ppu->vram, sizeof(ppu->vram));
++    g_cap.vramSnapped = true;
++  }
++}
++
++// Which sprites cover each (evaluated) line. Same tests as ppu_evaluateSprites:
++// row = (uint8)(line - y) < height, and x > -size.
++static void BuildSpriteBuckets(Ppu *ppu) {
++  memset(g_cap.lineMask, 0, sizeof(g_cap.lineMask));
++  for (int i = 0; i < 128; i++) {
++    int index = i * 2;
++    uint8_t y = ppu->oam[index] >> 8;
++    int spriteSize = kSpriteSizes[ppu->objSize][(ppu->highOam[index >> 3] >> ((index & 7) + 1)) & 1];
++    int spriteHeight = ppu->objInterlace ? spriteSize / 2 : spriteSize;
++    int x = ppu->oam[index] & 0xff;
++    x |= ((ppu->highOam[index >> 3] >> (index & 7)) & 1) << 8;
++    if (x > 255) x -= 512;
++    if (!(x > -spriteSize))
++      continue;
++    for (int r = 0; r < spriteHeight; r++)
++      g_cap.lineMask[(uint8_t)(y + r)][i >> 5] |= 1u << (i & 31);
++  }
++}
++
++// Port of ppu_evaluateSprites() that emits slivers instead of drawing pixels.
++// Returns the number of slivers (tilesFound, max 34).
++static int EvaluateSpritesToSlivers(Ppu *ppu, int line, PpuSliver *out, int max_out) {
++  const uint32_t *mask = g_cap.lineMask[(uint8_t)line];
++  if (!(mask[0] | mask[1] | mask[2] | mask[3]))
++    return 0;
++  uint8_t index = ppu->objPriority ? (ppu->oamAdr & 0xfe) : 0;
++  int spritesFound = 0, tilesFound = 0, n = 0;
++  for (int i = 0; i < 128; i++, index += 2) {
++    int s = index >> 1;
++    if (!(mask[s >> 5] & (1u << (s & 31))))
++      continue;
++    uint8_t y = ppu->oam[index] >> 8;
++    uint8_t row = line - y;
++    int spriteSize = kSpriteSizes[ppu->objSize][(ppu->highOam[index >> 3] >> ((index & 7) + 1)) & 1];
++    int x = ppu->oam[index] & 0xff;
++    x |= ((ppu->highOam[index >> 3] >> (index & 7)) & 1) << 8;
++    if (x > 255) x -= 512;
++    spritesFound++;
++    if (spritesFound > 32) {
++      ppu->rangeOver = true;
++      break;
++    }
++    if (ppu->objInterlace) row = row * 2 + (ppu->evenFrame ? 0 : 1);
++    int oam1 = ppu->oam[index + 1];
++    int objAdr = (oam1 & 0x100) ? ppu->objTileAdr2 : ppu->objTileAdr1;
++    bool hFlipped = oam1 & 0x4000;
++    if (oam1 & 0x8000) row = spriteSize - 1 - row;
++    int paletteBase = 0x80 + 16 * ((oam1 & 0xe00) >> 9);
++    int prio = SPRITE_PRIO_TO_PRIO((oam1 & 0x3000) >> 12, (oam1 & 0x800) == 0);
++    uint16_t z = paletteBase + (prio << 8);
++    for (int col = 0; col < spriteSize; col += 8) {
++      if (col + x > -8 && col + x < 256) {
++        tilesFound++;
++        if (tilesFound > 34) {
++          ppu->timeOver = true;
++          break;
++        }
++        int usedCol = hFlipped ? spriteSize - 1 - col : col;
++        int usedTile = ((((oam1 & 0xff) >> 4) + (row >> 3)) << 4) | (((oam1 & 0xf) + (usedCol >> 3)) & 0xf);
++        const uint16_t *addr = &ppu->vram[(objAdr + usedTile * 16 + (row & 0x7)) & 0x7fff];
++        uint32_t p01 = addr[0], p23 = addr[8];
++        uint32_t b0 = p01 & 0xff, b1 = p01 >> 8, b2 = p23 & 0xff, b3 = p23 >> 8;
++        if (hFlipped) {
++          b0 = kReverseByte[b0]; b1 = kReverseByte[b1]; b2 = kReverseByte[b2]; b3 = kReverseByte[b3];
++        }
++        if (n < max_out) {
++          out[n].x = col + x;
++          out[n].z = z;
++          out[n].planes = b0 | b1 << 8 | b2 << 16 | b3 << 24;
++          n++;
++        }
++      }
++    }
++    if (tilesFound > 34) break;
++  }
++  return n;
++}
++
++long g_ppur_why[6];  // fallback reasons: mode, mosaic, extra, vram-mid-frame, overflow, cgram
++static const uint16_t kZhi[3] = { 0xc000, 0xb100, 0xf200 }, kZlo[3] = { 0x8000, 0x7100, 0x1200 };
++
++// Gathers the 33 tiles of layer `layer`'s current tile row (see PpuTileBlock).
++static uint16_t GetTileBlock(Ppu *ppu, PpuFrame *f, int layer, const PpuLayerRec *L) {
++  int start = (L->hscroll >> 3) & 63;      // screen * 32 + column
++  int tileBase = L->ta0 & ~7;
++  // tm0/tm1 are 32-word aligned and < 0x8000, tileBase is 0x1000-aligned: the key is exact.
++  uint32_t key = ((uint32_t)(L->tm0 >> 5) << 20) | ((uint32_t)(L->tm1 >> 5) << 10) | ((uint32_t)(tileBase >> 12) << 6) | start;
++  if (g_cap.blockKey[layer] == key && g_cap.blockIdx[layer] != PPUR_NO_BLOCK)
++    return g_cap.blockIdx[layer];
++  if (f->numBlocks >= PPUR_MAX_BLOCKS)
++    return PPUR_NO_BLOCK;
++  PpuTileBlock *b = &f->blocks[f->numBlocks];
++  const uint16_t *vram = ppu->vram;
++  bool bpp4 = layer != 2;
++  for (int t = 0; t < 33; t++) {
++    int idx = (start + t) & 63;
++    uint16_t entry = vram[((idx & 32) ? L->tm1 : L->tm0) + (idx & 31)];
++    uint16_t z = (entry & 0x2000) ? kZhi[layer] : kZlo[layer];
++    z += (entry & 0x1c00) >> (bpp4 ? 6 : 8);
++    b->ent[t].z = z ^ 0x8000;
++    b->ent[t].flags = (entry >> 14 & 1) | (entry >> 14 & 2);
++    int tile = entry & 0x3ff;
++    int adr = bpp4 ? (tileBase + tile * 16) & 0x7fff : (tileBase + tile * 8) & 0x7fff;
++    int words = bpp4 ? 16 : 8;   // adr is tile-aligned, so adr + words never wraps
++#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
++    memcpy(b->tiles[t], &vram[adr], words * 2);   // N64: native order is RDRAM order
++#else
++    for (int w = 0; w < words; w++) {   // little-endian hosts (tests): store big-endian halfwords
++      uint16_t v = vram[adr + w];
++      b->tiles[t][w * 2] = v >> 8;
++      b->tiles[t][w * 2 + 1] = v & 0xff;
++    }
++#endif
++  }
++  g_cap.blockKey[layer] = key;
++  g_cap.blockIdx[layer] = f->numBlocks;
++  return f->numBlocks++;
++}
++
++bool PpuRsp_CaptureLine(Ppu *ppu, int line) {
++  PpuFrame *f = g_cap.frame;
++  int idx = line - 1;
++  if (g_cap.ppu != ppu || idx < 0 || idx >= PPUR_MAX_LINES)
++    return false;
++  g_cap.linesStarted = true;
++  PpuLineRec *rec = &f->lines[idx];
++  memset(rec, 0, sizeof(*rec));
++  if (idx + 1 > f->numLines) f->numLines = idx + 1;
++
++  if (ppu->forcedBlank) {
++    rec->flags = kLR_Valid | kLR_ForcedBlank;
++    return true;
++  }
++  // Only mode 1 without mosaic, and without VRAM changes since the snapshot,
++  // is drawn by the RSP. Everything else is drawn by the CPU right now.
++  if (ppu->mode != 1 || (ppu->mosaicEnabled & 7) || ppu->extraLeftCur || ppu->extraRightCur ||
++      g_cap.vramSnapped || f->overflow) {
++    g_ppur_why[ppu->mode != 1 ? 0 : (ppu->mosaicEnabled & 7) ? 1 : (ppu->extraLeftCur || ppu->extraRightCur) ? 2 : g_cap.vramSnapped ? 3 : 4]++;
++    rec->flags = kLR_Valid | kLR_CpuDrawn;
++    return false;
++  }
++  if (g_cap.cgramDirty) {
++    if (f->numCgrams >= PPUR_MAX_CGRAMS) {
++      rec->flags = kLR_Valid | kLR_CpuDrawn;
++      return false;
++    }
++    memcpy(f->cgram[f->numCgrams++], ppu->cgram, sizeof(ppu->cgram));
++    g_cap.cgramDirty = false;
++  }
++  if (g_cap.objDirty) {
++    BuildSpriteBuckets(ppu);
++    g_cap.objDirty = false;
++  }
++
++  rec->flags = kLR_Valid;
++  rec->brightness = ppu->brightness;
++  rec->screenEnabled[0] = ppu->screenEnabled[0];
++  rec->screenEnabled[1] = ppu->screenEnabled[1];
++  rec->screenWindowed[0] = ppu->screenWindowed[0];
++  rec->screenWindowed[1] = ppu->screenWindowed[1];
++  uint8_t m = 0;
++  for (int i = 0; i < 6; i++) m |= ppu->mathEnabled[i] << i;
++  rec->mathEnabled = m;
++  rec->cgramIdx = f->numCgrams - 1;
++  rec->w1l = ppu->window1left; rec->w1r = ppu->window1right;
++  rec->w2l = ppu->window2left; rec->w2r = ppu->window2right;
++  rec->clipMode = ppu->clipMode;
++  rec->preventMathMode = ppu->preventMathMode;
++  rec->mathFlags = (ppu->addSubscreen ? 1 : 0) | (ppu->halfColor ? 2 : 0) | (ppu->subtractColor ? 4 : 0);
++  rec->fixedColor = ppu->fixedColorR | ppu->fixedColorG << 5 | ppu->fixedColorB << 10;
++  rec->windowsel = ppu->windowsel;
++  for (int layer = 0; layer < 3; layer++) {
++    BgLayer *bglayer = &ppu->bgLayer[layer];
++    unsigned y = line + bglayer->vScroll;
++    int sc_offs = bglayer->tilemapAdr + (((y >> 3) & 0x1f) << 5);
++    if ((y & 0x100) && bglayer->tilemapHigher)
++      sc_offs += bglayer->tilemapWider ? 0x800 : 0x400;
++    rec->bg[layer].tm0 = sc_offs & 0x7fff;
++    rec->bg[layer].tm1 = (sc_offs + (bglayer->tilemapWider ? 0x400 : 0)) & 0x7fff;
++    rec->bg[layer].ta0 = bglayer->tileAdr + (y & 7);
++    rec->bg[layer].ta1 = bglayer->tileAdr + 7 - (y & 7);
++    rec->bg[layer].hscroll = bglayer->hScroll;
++    rec->block[layer] = (ppu->screenEnabled[0] | ppu->screenEnabled[1]) & (1 << layer) ?
++        GetTileBlock(ppu, f, layer, &rec->bg[layer]) : PPUR_NO_BLOCK;
++  }
++  // Sprites (same condition as ppu_runLine: evaluated unless forced blank).
++  int room = PPUR_MAX_SLIVERS - f->numSlivers;
++  if (room < 34) {
++    f->overflow = true;
++    rec->flags = kLR_Valid | kLR_CpuDrawn;
++    return false;
++  }
++  int n = EvaluateSpritesToSlivers(ppu, line - 1, &f->slivers[f->numSlivers], 34);
++  rec->sliverStart = f->numSlivers;
++  rec->sliverCount = n;
++  f->numSlivers += n;
++  if (n) rec->flags |= kLR_HasSprites;
++  return true;
++}
++
++// ---------------------------------------------------------------------------
++// C reference renderer
++// ---------------------------------------------------------------------------
++typedef struct {
++  int16_t edges[6];
++  uint8_t nr;
++  uint8_t bits;
++} Windows;
++
++enum { kWindow1Inversed = 1, kWindow1Enabled = 2, kWindow2Inversed = 4, kWindow2Enabled = 8 };
++
++static void Windows_Clear(Windows *win) {
++  win->edges[0] = 0;
++  win->edges[1] = 256;
++  win->nr = 1;
++  win->bits = 0;
++}
++
++// Same algorithm as PpuWindows_Calc (from Snes9x).
++static void Windows_Calc(Windows *win, const PpuLineRec *r, unsigned layer) {
++  uint32_t winflags = r->windowsel >> (layer * 4);
++  unsigned nr = 1;
++  int window_right = 256;
++  win->edges[0] = 0;
++  win->edges[1] = window_right;
++  unsigned i, j;
++  int t;
++  bool w1_ena = (winflags & kWindow1Enabled) && r->w1l <= r->w1r;
++  if (w1_ena) {
++    if (r->w1l > win->edges[0]) {
++      win->edges[nr] = r->w1l;
++      win->edges[++nr] = window_right;
++    }
++    if (r->w1r + 1 < window_right) {
++      win->edges[nr] = r->w1r + 1;
++      win->edges[++nr] = window_right;
++    }
++  }
++  bool w2_ena = (winflags & kWindow2Enabled) && r->w2l <= r->w2r;
++  if (w2_ena) {
++    for (i = 0; i <= nr && (t = r->w2l) != win->edges[i]; i++) {
++      if (t < win->edges[i]) {
++        for (j = nr++; j >= i; j--)
++          win->edges[j + 1] = win->edges[j];
++        win->edges[i] = t;
++        break;
++      }
++    }
++    for (; i <= nr && (t = r->w2r + 1) != win->edges[i]; i++) {
++      if (t < win->edges[i]) {
++        for (j = nr++; j >= i; j--)
++          win->edges[j + 1] = win->edges[j];
++        win->edges[i] = t;
++        break;
++      }
++    }
++  }
++  win->nr = nr;
++  uint8_t w1_bits = 0, w2_bits = 0;
++  if (w1_ena) {
++    for (i = 0; win->edges[i] != r->w1l; i++);
++    for (j = i; win->edges[j] != r->w1r + 1; j++);
++    w1_bits = ((1 << (j - i)) - 1) << i;
++  }
++  if ((winflags & (kWindow1Enabled | kWindow1Inversed)) == (kWindow1Enabled | kWindow1Inversed))
++    w1_bits = ~w1_bits;
++  if (w2_ena) {
++    for (i = 0; win->edges[i] != r->w2l; i++);
++    for (j = i; win->edges[j] != r->w2r + 1; j++);
++    w2_bits = ((1 << (j - i)) - 1) << i;
++  }
++  if ((winflags & (kWindow2Enabled | kWindow2Inversed)) == (kWindow2Enabled | kWindow2Inversed))
++    w2_bits = ~w2_bits;
++  win->bits = w1_bits | w2_bits;
++}
++
++static void LayerWindows(Windows *win, const PpuLineRec *r, int sub, int layer) {
++  if (r->screenWindowed[sub] & (1 << layer)) Windows_Calc(win, r, layer); else Windows_Clear(win);
++}
++
++static void ClearBuf(uint16_t *b) {
++  for (int i = 0; i < 256; i++) b[i] = 0x0500;
++}
++
++// 4bpp and 2bpp background layer, mode 1. Same pixel order and z-tests as ppu.c.
++static void DrawBg(const PpuLineRec *r, const uint16_t *vram, uint16_t *buf, int sub, int layer,
++                   int bpp, uint16_t zhi, uint16_t zlo) {
++  if (!(r->screenEnabled[sub] & (1 << layer)))
++    return;
++  Windows win;
++  LayerWindows(&win, r, sub, layer);
++  const PpuLayerRec *L = &r->bg[layer];
++  const uint16_t *tps[2] = { &vram[L->tm0], &vram[L->tm1] };
++  int pshift = bpp == 4 ? 6 : 8;
++  for (int windex = 0; windex < win.nr; windex++) {
++    if (win.bits & (1 << windex))
++      continue;
++    unsigned x = win.edges[windex] + L->hscroll;
++    unsigned w = win.edges[windex + 1] - win.edges[windex];
++    uint16_t *dstz = buf + win.edges[windex];
++    // Walk pixels; the tile changes every 8 pixels of x.
++    while (w) {
++      const uint16_t *tp = tps[(x >> 8) & 1] + ((x >> 3) & 0x1f);
++      uint32_t tile = *tp;
++      int ta = (tile & 0x8000) ? L->ta1 : L->ta0;
++      uint16_t z = (tile & 0x2000) ? zhi : zlo;
++      uint32_t bits;
++      if (bpp == 4) {
++        const uint16_t *a = &vram[(ta + (tile & 0x3ff) * 16) & 0x7fff];
++        bits = a[0] | a[8] << 16;
++      } else {
++        bits = vram[(ta + (tile & 0x3ff) * 8) & 0x7fff];
++      }
++      z += (tile & 0x1c00) >> pshift;
++      int px = x & 7;
++      int cnt = 8 - px;
++      if ((unsigned)cnt > w) cnt = w;
++      for (int k = 0; k < cnt; k++, px++, dstz++) {
++        int i = (tile & 0x4000) ? 7 - px : px;   // bit index: h-flip reverses
++        int pixel;
++        if (bpp == 4)
++          pixel = (bits >> (7 - i)) & 1 | (bits >> (14 - i)) & 2 | (bits >> (21 - i)) & 4 | (bits >> (28 - i)) & 8;
++        else
++          pixel = (bits >> (7 - i)) & 1 | (bits >> (14 - i)) & 2;
++        if (pixel && z > dstz[0]) dstz[0] = z + pixel;
++      }
++      x += cnt;
++      w -= cnt;
++    }
++  }
++}
++
++static void DrawSprites(const PpuLineRec *r, const uint16_t *obj, uint16_t *buf, int sub) {
++  if (!(r->screenEnabled[sub] & (1 << 4)))
++    return;
++  Windows win;
++  LayerWindows(&win, r, sub, 4);
++  for (int windex = 0; windex < win.nr; windex++) {
++    if (win.bits & (1 << windex))
++      continue;
++    for (int x = win.edges[windex]; x < win.edges[windex + 1]; x++)
++      buf[x] = obj[x];   // mode 1: sprites are drawn first, onto the cleared backdrop
++  }
++}
++
++static void BuildObjBuffer(const PpuFrame *f, const PpuLineRec *r, uint16_t *obj) {
++  ClearBuf(obj);
++  const PpuSliver *s = &f->slivers[r->sliverStart];
++  for (int n = 0; n < r->sliverCount; n++, s++) {
++    for (int px = 0; px < 8; px++) {
++      int x = s->x + px;
++      if (x < 0 || x > 255) continue;
++      int sh = 7 - px;
++      uint32_t p = s->planes >> sh;
++      int pixel = (p & 1) | (p >> 7 & 2) | (p >> 14 & 4) | (p >> 21 & 8);
++      if (pixel != 0 && (obj[x] & 0xff) == 0)
++        obj[x] = s->z + pixel;
++    }
++  }
++}
++
++static void DrawBackgrounds(const PpuFrame *f, const PpuLineRec *r, const uint16_t *obj, uint16_t *buf, int sub) {
++  const uint16_t *vram = f->vram;
++  if (r->flags & kLR_HasSprites)
++    DrawSprites(r, obj, buf, sub);
++  DrawBg(r, vram, buf, sub, 0, 4, 0xc000, 0x8000);
++  DrawBg(r, vram, buf, sub, 1, 4, 0xb100, 0x7100);
++  DrawBg(r, vram, buf, sub, 2, 2, 0xf200, 0x1200);
++}
++
++typedef struct PpuRspDebug { uint16_t obj[256], main[256], sub[256]; bool rendered_sub; } PpuRspDebug;
++static void RenderLine(const PpuFrame *f, const PpuLineRec *r, uint16_t *dst, PpuRspDebug *dbg) {
++  if (r->flags & kLR_ForcedBlank) {
++    for (int i = 0; i < 256; i++) dst[i] = PPUR_PIX16(0, 0, 0);
++    return;
++  }
++  uint8_t bmul[32 + 31], bmulHalf[64];
++  for (int i = 0; i < 32; i++)
++    bmulHalf[i * 2] = bmulHalf[i * 2 + 1] = bmul[i] = ((i << 3) | (i >> 2)) * r->brightness / 15;
++  memset(&bmul[32], bmul[31], 31);
++
++  const uint16_t *cgram = f->cgram[r->cgramIdx];
++  uint16_t obj[256], main[256], subb[256];
++  BuildObjBuffer(f, r, obj);
++
++  ClearBuf(main);
++  DrawBackgrounds(f, r, obj, main, 0);
++
++  uint32_t math_enabled = r->mathEnabled;
++  bool addSubscreen = r->mathFlags & 1, halfColor = r->mathFlags & 2, subtractColor = r->mathFlags & 4;
++  bool rendered_subscreen = false;
++  if (r->preventMathMode != 3 && addSubscreen && math_enabled) {
++    ClearBuf(subb);
++    if (r->screenEnabled[1] != 0) {
++      DrawBackgrounds(f, r, obj, subb, 1);
++      rendered_subscreen = true;
++    }
++  }
++
++  if (dbg) {
++    memcpy(dbg->obj, obj, sizeof(obj)); memcpy(dbg->main, main, sizeof(main));
++    memcpy(dbg->sub, subb, sizeof(subb)); dbg->rendered_sub = rendered_subscreen;
++  }
++  Windows cwin;
++  Windows_Calc(&cwin, r, 5);
++  static const uint8_t kCwBitsMod[8] = { 0x00, 0xff, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00 };
++  uint32_t cw_clip_math = ((cwin.bits & kCwBitsMod[r->clipMode]) ^ kCwBitsMod[r->clipMode + 4]) |
++    ((cwin.bits & kCwBitsMod[r->preventMathMode]) ^ kCwBitsMod[r->preventMathMode + 4]) << 8;
++
++  uint32_t windex = 0;
++  do {
++    uint32_t left = cwin.edges[windex], right = cwin.edges[windex + 1];
++    uint32_t clip_color_mask = (cw_clip_math & 1) ? 0x1f : 0;
++    uint32_t math_enabled_cur = (cw_clip_math & 0x100) ? math_enabled : 0;
++    uint32_t fixed_color = r->fixedColor;
++    if (math_enabled_cur == 0 || fixed_color == 0 && !halfColor && !rendered_subscreen) {
++      for (uint32_t i = left; i < right; i++) {
++        uint32_t color = cgram[main[i] & 0xff];
++        dst[i] = PPUR_PIX16(bmul[color & clip_color_mask], bmul[(color >> 5) & clip_color_mask],
++                            bmul[(color >> 10) & clip_color_mask]);
++      }
++    } else {
++      const uint8_t *half_color_map = halfColor ? bmulHalf : bmul;
++      math_enabled_cur |= addSubscreen << 8 | subtractColor << 9;
++      for (uint32_t i = left; i < right; i++) {
++        uint32_t color = cgram[main[i] & 0xff], color2;
++        uint8_t main_layer = (main[i] >> 8) & 0xf;
++        uint32_t rr = color & clip_color_mask;
++        uint32_t g = (color >> 5) & clip_color_mask;
++        uint32_t b = (color >> 10) & clip_color_mask;
++        const uint8_t *color_map = bmul;
++        if (math_enabled_cur & (1 << main_layer)) {
++          if (math_enabled_cur & 0x100) {
++            if ((subb[i] & 0xff) != 0)
++              color2 = cgram[subb[i] & 0xff], color_map = half_color_map;
++            else
++              color2 = fixed_color;
++          } else {
++            color2 = fixed_color, color_map = half_color_map;
++          }
++          uint32_t r2 = (color2 & 0x1f), g2 = ((color2 >> 5) & 0x1f), b2 = ((color2 >> 10) & 0x1f);
++          if (math_enabled_cur & 0x200) {
++            rr = (rr >= r2) ? rr - r2 : 0;
++            g = (g >= g2) ? g - g2 : 0;
++            b = (b >= b2) ? b - b2 : 0;
++          } else {
++            rr += r2;
++            g += g2;
++            b += b2;
++          }
++        }
++        dst[i] = PPUR_PIX16(color_map[rr], color_map[g], color_map[b]);
++      }
++    }
++  } while (cw_clip_math >>= 1, ++windex < cwin.nr);
++}
++
++void PpuRsp_RenderFrameC(const PpuFrame *f, uint16_t *dst, int stride) {
++  for (int idx = 0; idx < f->numLines; idx++) {
++    const PpuLineRec *r = &f->lines[idx];
++    if (!(r->flags & kLR_Valid) || (r->flags & kLR_CpuDrawn))
++      continue;
++    RenderLine(f, r, dst + idx * stride, NULL);
++  }
++}
++
++// Test hook: render one line and also return the intermediate z-buffers.
++void PpuRsp_RenderLineDebug(const PpuFrame *f, int idx, uint16_t *dst, void *dbg) {
++  RenderLine(f, &f->lines[idx], dst, (PpuRspDebug *)dbg);
++}
+diff --git a/src/snes/ppu_rsp.h b/src/snes/ppu_rsp.h
+new file mode 100644
+index 0000000..ab4aa05
+--- /dev/null
++++ b/src/snes/ppu_rsp.h
+@@ -0,0 +1,102 @@
++// Frame capture for the RSP renderer.
++//
++// Instead of drawing each scanline on the CPU, ppu_runLine() records what the
++// line needs (PpuLineRec) and the visible sprite slivers. At the end of the
++// frame the RSP (or PpuRsp_RenderFrameC, the plain C reference with identical
++// output) draws all lines from this capture plus a snapshot of VRAM and CGRAM.
++//
++// Everything here is laid out for the RSP: big-endian on N64, 8-byte aligned
++// blocks, halfword fields at even offsets.
++#ifndef PPU_RSP_H
++#define PPU_RSP_H
++
++#include <stdint.h>
++#include <stdbool.h>
++
++#define PPUR_MAX_LINES 240        // visible lines 1..239 -> records 0..238
++#define PPUR_MAX_SLIVERS 4096     // per frame (max 34 per line; ~2400 seen in tests)
++#define PPUR_MAX_CGRAMS 16        // CGRAM snapshots per frame (palette changes mid-frame)
++#define PPUR_MAX_BLOCKS 128       // tile blocks per frame (see PpuTileBlock); overflow falls back to per-tile DMA
++#define PPUR_NO_BLOCK 0xffff
++
++enum {
++  kLR_ForcedBlank = 1,   // line is black
++  kLR_CpuDrawn = 2,      // line was drawn by the CPU (mode 7): RSP must not touch it
++  kLR_HasSprites = 4,    // sprite slivers present
++  kLR_Valid = 8,         // record was written this frame
++};
++
++typedef struct PpuLayerRec {   // 10 bytes per BG layer
++  uint16_t tm0, tm1;          // VRAM word address of the 32-entry tilemap row in screen 0 / 1
++  uint16_t ta0, ta1;          // tile base + row (normal) / tile base + 7 - row (v-flipped)
++  uint16_t hscroll;
++} PpuLayerRec;
++
++// The 33 tiles one BG layer needs for a line, gathered by the CPU when the
++// layer's tile row changes (normally every 8 lines) so the RSP can fetch them
++// with one DMA. Entry z is the biased z (C value ^ 0x8000) including palette.
++typedef struct PpuTileBlock {   // 1192 bytes
++  struct { uint16_t z; uint16_t flags; } ent[33];   // flags: bit0 h-flip, bit1 v-flip
++  uint8_t pad[4];
++  uint8_t tiles[33][32];        // 4bpp: whole tile (planes 0/1 rows, then planes 2/3); 2bpp: first 16 bytes
++} PpuTileBlock;
++
++typedef struct PpuLineRec {     // 64 bytes
++  uint8_t flags;
++  uint8_t brightness;
++  uint8_t screenEnabled[2];
++  uint8_t screenWindowed[2];
++  uint8_t mathEnabled;          // bits 0..5
++  uint8_t cgramIdx;             // which CGRAM snapshot this line uses
++  uint8_t w1l, w1r, w2l, w2r;   // window 1/2 left/right
++  uint8_t clipMode, preventMathMode;
++  uint8_t mathFlags;            // bit0 addSubscreen, bit1 halfColor, bit2 subtractColor
++  uint8_t sliverCount;
++  uint16_t fixedColor;          // 15-bit BGR
++  uint16_t sliverStart;         // index into PpuFrame.slivers
++  uint32_t windowsel;           // 4 bits per layer 0..5
++  PpuLayerRec bg[3];            // 30 bytes
++  uint16_t block[3];            // tile block per layer, or PPUR_NO_BLOCK
++  uint8_t pad[4];
++} PpuLineRec;
++
++typedef struct PpuSliver {      // 8 bytes: one 8-pixel row of a sprite tile
++  int16_t x;                    // screen x of the leftmost pixel (may be negative)
++  uint16_t z;                   // priority << 8 | palette base (0x80 + 16 * pal)
++  uint32_t planes;              // plane0 | plane1 << 8 | plane2 << 16 | plane3 << 24, already h-flipped,
++                                // bit 7 of each plane byte = leftmost pixel
++} PpuSliver;
++
++// 16-byte aligned (and so a multiple of 16 in size) so that every frame of an
++// array keeps the RSP DMA alignment: the RSP drops the low 3 address bits.
++typedef struct __attribute__((aligned(16))) PpuFrame {
++  PpuLineRec lines[PPUR_MAX_LINES];
++  uint16_t cgram[PPUR_MAX_CGRAMS][256];
++  PpuSliver slivers[PPUR_MAX_SLIVERS];
++  uint16_t vram[0x8000];        // snapshot at the end of the frame
++  PpuTileBlock blocks[PPUR_MAX_BLOCKS];
++  int numBlocks;
++  int numLines;                 // highest line index used + 1
++  int numCgrams;
++  int numSlivers;
++  bool overflow;                // capture overflowed: frame must be drawn by the CPU
++} PpuFrame;
++
++typedef struct Ppu Ppu;
++
++// Capture control. When a frame is set, ppu_runLine() records instead of drawing
++// (except mode-7 lines, which it still draws itself and flags kLR_CpuDrawn).
++void PpuRsp_BeginFrame(Ppu *ppu, PpuFrame *frame);
++void PpuRsp_EndFrame(Ppu *ppu);          // snapshots VRAM; frame is complete
++bool PpuRsp_CaptureLine(Ppu *ppu, int line);  // returns false if the CPU must draw this line
++void PpuRsp_NoteCgramWrite(Ppu *ppu);    // called from ppu_write on CGRAM changes
++void PpuRsp_NoteObjChange(Ppu *ppu);     // OAM / OBSEL changed: rebuild sprite buckets
++
++// Plain C reference renderer: draws the captured frame as RGBA5551 into
++// dst (stride in pixels), lines y=1.. into rows 0... Skips kLR_CpuDrawn lines.
++void PpuRsp_RenderFrameC(const PpuFrame *frame, uint16_t *dst, int stride);
++
++// RGBA5551 from 5-bit channels after brightness (r,g,b are 8-bit brightness-mult values).
++#define PPUR_PIX16(r8, g8, b8) (uint16_t)((((r8) >> 3) << 11) | (((g8) >> 3) << 6) | (((b8) >> 3) << 1) | 1)
++
++#endif
+diff --git a/src/snes/snes.c b/src/snes/snes.c
+index 1e71e5e..88d5927 100644
+--- a/src/snes/snes.c
++++ b/src/snes/snes.c
+@@ -164,6 +164,19 @@ void snes_handle_pos_stuff(Snes *snes) {
+   }
+ }
+ 
++// Runs one whole scanline starting at hPos 0. Equivalent to calling
++// snes_handle_pos_stuff() 682 times: only hPos 0, 512 and 1024 do anything.
++void snes_runLine(Snes *snes) {
++  snes->hPos = 0;
++  snes_handle_pos_stuff(snes);       // hPos 0: vblank / NMI / HDMA init
++  snes->hPos = 512;
++  snes_handle_pos_stuff(snes);       // hPos 512: render the line
++  snes->hPos = 1024;
++  snes_handle_pos_stuff(snes);       // hPos 1024: HDMA
++  snes->hPos = 1362;
++  snes_handle_pos_stuff(snes);       // advances to the next line (hPos -> 0)
++}
++
+ #define IS_ADR(x) (x == 0xfffff)
+ 
+ void snes_catchupApu(Snes* snes) {
+diff --git a/src/snes/snes.h b/src/snes/snes.h
+index b093777..f1810fe 100644
+--- a/src/snes/snes.h
++++ b/src/snes/snes.h
+@@ -85,6 +85,7 @@ void snes_cpuWrite(Snes* snes, uint32_t adr, uint8_t val);
+ void snes_debugCycle(Snes* snes, bool* cpuNext, bool* spcNext);
+ 
+ void snes_handle_pos_stuff(Snes *snes);
++void snes_runLine(Snes *snes);
+ 
+ // snes_other.c functions:
+ 
+diff --git a/src/snes/snes_other.c b/src/snes/snes_other.c
+index 55a09dd..71db902 100644
+--- a/src/snes/snes_other.c
++++ b/src/snes/snes_other.c
+@@ -83,8 +83,13 @@ bool snes_loadRom(Snes* snes, const uint8_t* data, int length) {
+     }
+     newLength *= 2;
+   }
++#ifdef N64
++  // Caller allocated `data` with room for the power-of-2 size (see n64_main.c).
++  uint8_t* newData = (uint8_t*)data;
++#else
+   uint8_t* newData = malloc(newLength);
+   memcpy(newData, data, length);
++#endif
+   int test = 1;
+   while(length != newLength) {
+     if(length & test) {
+@@ -99,7 +104,9 @@ bool snes_loadRom(Snes* snes, const uint8_t* data, int length) {
+     newData, newLength, headers[used].chips > 0 ? headers[used].ramSize : 0
+   );
+   snes_reset(snes, true); // reset after loading
++#ifndef N64
+   free(newData);
++#endif
+   return true;
+ }
+ 
+diff --git a/src/types.h b/src/types.h
+index eab300a..65c378c 100644
+--- a/src/types.h
++++ b/src/types.h
+@@ -17,10 +17,72 @@
+ 
+ typedef uint8_t uint8;
+ typedef int8_t int8;
++#if defined(__cplusplus) && defined(SM_LE_TYPES)
++// The game code sometimes memcpy()s between overlapping RAM regions (e.g. when
++// unpacking room data into place). That is undefined behaviour; on PC glibc
++// memcpy happens to behave like memmove, which is also what the SNES block move
++// does. newlib's memcpy copies forward and corrupts the data, so use memmove.
++#include <string.h>
++#define memcpy memmove
++// ---------------------------------------------------------------------------
++// Byte-order-independent integers for big-endian targets (N64).
++//
++// The game code (written for x86) reads and writes SNES RAM/ROM, and its own
++// tables of SNES data, through uint16/uint32 pointers and struct overlays.
++// These wrappers always store values in little-endian (SNES) byte order with
++// 1-byte alignment, so every such access means exactly what it meant on a PC:
++// no byte swapping bugs, no unaligned-access exceptions. They behave like the
++// plain integer types in expressions (implicit conversion), assignments,
++// compound assignments and ++/--.
++// ---------------------------------------------------------------------------
++template<typename T, typename U>
++struct LeInt {
++  uint8_t b[sizeof(T)];
++  LeInt() = default;
++  constexpr LeInt(T v) : b{} { set(v); }
++  template<typename T2, typename U2>
++  constexpr LeInt(LeInt<T2, U2> o) : b{} { set((T)(T2)o); }
++  constexpr operator T() const {
++    U v = 0;
++    for (unsigned i = 0; i < sizeof(T); i++) v |= (U)b[i] << (8 * i);
++    return (T)v;
++  }
++  constexpr void set(T v) {
++    U u = (U)v;
++    for (unsigned i = 0; i < sizeof(T); i++) b[i] = (uint8_t)(u >> (8 * i));
++  }
++  constexpr LeInt &operator=(T v) { set(v); return *this; }
++  template<typename T2, typename U2>
++  constexpr LeInt &operator=(LeInt<T2, U2> o) { set((T)(T2)o); return *this; }
++  template<typename V> LeInt &operator+=(V v) { set((T)((T)*this + v)); return *this; }
++  template<typename V> LeInt &operator-=(V v) { set((T)((T)*this - v)); return *this; }
++  template<typename V> LeInt &operator*=(V v) { set((T)((T)*this * v)); return *this; }
++  template<typename V> LeInt &operator/=(V v) { set((T)((T)*this / v)); return *this; }
++  template<typename V> LeInt &operator%=(V v) { set((T)((T)*this % v)); return *this; }
++  template<typename V> LeInt &operator&=(V v) { set((T)((T)*this & v)); return *this; }
++  template<typename V> LeInt &operator|=(V v) { set((T)((T)*this | v)); return *this; }
++  template<typename V> LeInt &operator^=(V v) { set((T)((T)*this ^ v)); return *this; }
++  template<typename V> LeInt &operator<<=(V v) { set((T)((T)*this << v)); return *this; }
++  template<typename V> LeInt &operator>>=(V v) { set((T)((T)*this >> v)); return *this; }
++  constexpr auto operator+() const { return +(T)*this; }
++  constexpr auto operator-() const { return -(T)*this; }
++  LeInt &operator++() { set((T)((T)*this + 1)); return *this; }
++  LeInt &operator--() { set((T)((T)*this - 1)); return *this; }
++  T operator++(int) { T old = *this; set((T)(old + 1)); return old; }
++  T operator--(int) { T old = *this; set((T)(old - 1)); return old; }
++};
++typedef LeInt<uint16_t, uint16_t> uint16;
++typedef LeInt<int16_t, uint16_t> int16;
++typedef LeInt<uint32_t, uint32_t> uint32;
++typedef LeInt<int32_t, uint32_t> int32;
++static_assert(sizeof(uint16) == 2 && alignof(uint16) == 1, "LeInt layout");
++static_assert(sizeof(uint32) == 4 && alignof(uint32) == 1, "LeInt layout");
++#else
+ typedef uint16_t uint16;
+ typedef int16_t int16;
+ typedef uint32_t uint32;
+ typedef int32_t int32;
++#endif
+ typedef uint64_t uint64;
+ typedef int64_t int64;
+ typedef unsigned int uint;
+@@ -51,7 +113,7 @@ typedef uint16 VoidP;
+ #define kDebugFlag 0
+ #endif
+ 
+-static FORCEINLINE uint16 abs16(uint16 t) { return sign16(t) ? -t : t; }
++static FORCEINLINE uint16 abs16(uint16 t) { return sign16(t) ? -t : +t; }
+ static FORCEINLINE uint8 abs8(uint8 t) { return sign8(t) ? -t : t; }
+ static FORCEINLINE int IntMin(int a, int b) { return a < b ? a : b; }
+ static FORCEINLINE int IntMax(int a, int b) { return a > b ? a : b; }

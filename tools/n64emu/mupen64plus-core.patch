@@ -1,0 +1,484 @@
+diff --git a/src/device/r4300/cached_interp.c b/src/device/r4300/cached_interp.c
+index b46d99a..cc10332 100644
+--- a/src/device/r4300/cached_interp.c
++++ b/src/device/r4300/cached_interp.c
+@@ -290,8 +290,6 @@ void cached_interp_NOTCOMPILED2(void)
+ #define cached_interp_LDC2        cached_interp_RESERVED_COP2
+ #define cached_interp_DCTC2       cached_interp_RESERVED_COP2
+ #define cached_interp_LWC2        cached_interp_RESERVED_COP2
+-#define cached_interp_LLD         cached_interp_NI
+-#define cached_interp_SCD         cached_interp_NI
+ #define cached_interp_SDC2        cached_interp_RESERVED_COP2
+ #define cached_interp_SWC2        cached_interp_RESERVED_COP2
+ #define cached_interp_JR_IDLE     cached_interp_NI
+diff --git a/src/device/r4300/cp0.c b/src/device/r4300/cp0.c
+index 019d377..9c16871 100644
+--- a/src/device/r4300/cp0.c
++++ b/src/device/r4300/cp0.c
+@@ -128,7 +128,7 @@ int check_cop1_unusable(struct r4300_core* r4300)
+ 
+     if (!(cp0_regs[CP0_STATUS_REG] & CP0_STATUS_CU1))
+     {
+-        cp0_regs[CP0_CAUSE_REG] = CP0_CAUSE_EXCCODE_CPU | CP0_CAUSE_CE1;
++        cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00)) | CP0_CAUSE_EXCCODE_CPU | CP0_CAUSE_CE1;
+         exception_general(r4300);
+         return 1;
+     }
+@@ -141,7 +141,7 @@ int check_cop2_unusable(struct r4300_core* r4300)
+ 
+     if (!(cp0_regs[CP0_STATUS_REG] & CP0_STATUS_CU2))
+     {
+-        cp0_regs[CP0_CAUSE_REG] = CP0_CAUSE_EXCCODE_CPU | CP0_CAUSE_CE2;
++        cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00)) | CP0_CAUSE_EXCCODE_CPU | CP0_CAUSE_CE2;
+         exception_general(r4300);
+         return 1;
+     }
+diff --git a/src/device/r4300/interrupt.c b/src/device/r4300/interrupt.c
+index 9c81a18..3198d02 100644
+--- a/src/device/r4300/interrupt.c
++++ b/src/device/r4300/interrupt.c
+@@ -340,7 +340,7 @@ void r4300_check_interrupt(struct r4300_core* r4300, uint32_t cause_ip, int set_
+     int* cp0_cycle_count = r4300_cp0_cycle_count(&r4300->cp0);
+ 
+     if (set_cause) {
+-        cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] | cause_ip) & ~CP0_CAUSE_EXCCODE_MASK;
++        cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] | cause_ip);
+     }
+     else {
+         cp0_regs[CP0_CAUSE_REG] &= ~cause_ip;
+@@ -380,7 +380,7 @@ void r4300_check_interrupt(struct r4300_core* r4300, uint32_t cause_ip, int set_
+ void raise_maskable_interrupt(struct r4300_core* r4300, uint32_t cause_ip)
+ {
+     uint32_t* cp0_regs = r4300_cp0_regs(&r4300->cp0);
+-    cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] | cause_ip) & ~CP0_CAUSE_EXCCODE_MASK;
++    cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] | cause_ip);
+ 
+     if (!(cp0_regs[CP0_STATUS_REG] & cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00))) {
+         return;
+@@ -390,6 +390,7 @@ void raise_maskable_interrupt(struct r4300_core* r4300, uint32_t cause_ip)
+         return;
+     }
+ 
++    cp0_regs[CP0_CAUSE_REG] &= ~CP0_CAUSE_EXCCODE_MASK;
+     exception_general(r4300);
+ }
+ 
+@@ -413,7 +414,14 @@ void compare_int_handler(void* opaque)
+ 
+ void check_int_handler(void* opaque)
+ {
+-    exception_general((struct r4300_core*)opaque);
++    struct r4300_core* r4300 = (struct r4300_core*)opaque;
++    const uint32_t* cp0_regs = r4300_cp0_regs(&r4300->cp0);
++    /* a stale check may fire after interrupts were masked: hardware would not take it */
++    if ((cp0_regs[CP0_STATUS_REG] & (CP0_STATUS_IE | CP0_STATUS_EXL | CP0_STATUS_ERL)) != CP0_STATUS_IE
++        || !(cp0_regs[CP0_STATUS_REG] & cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00)))
++        return;
++    r4300_cp0_regs(&r4300->cp0)[CP0_CAUSE_REG] &= ~CP0_CAUSE_EXCCODE_MASK;
++    exception_general(r4300);
+ }
+ 
+ /* Special interrupt is a fake interrupt which porpose is
+diff --git a/src/device/r4300/mips_instructions.def b/src/device/r4300/mips_instructions.def
+index c3a4acf..7684c64 100644
+--- a/src/device/r4300/mips_instructions.def
++++ b/src/device/r4300/mips_instructions.def
+@@ -1,3 +1,12 @@
++/* Minimal XKPHYS (64-bit physical window) support: libdragon accesses
++   PI/cart through 0x9000_0000_xxxx_xxxx addresses. Map those to KSEG1. */
++#ifndef R4300_XADDR
++#define R4300_XADDR(rs, imm) r4300_xaddr((int64_t)(rs) + (int64_t)(imm))
++static inline uint32_t r4300_xaddr(int64_t a) {
++    if (((uint64_t)a >> 62) == 2) return 0xa0000000u | (uint32_t)(a & 0x1fffffff);
++    return (uint32_t)a;
++}
++#endif
+ /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+  *   Mupen64plus - mips_instructions.def                                   *
+  *   Mupen64Plus homepage: https://mupen64plus.org/                        *
+@@ -119,7 +128,7 @@ DECLARE_INSTRUCTION(RESERVED)
+ 
+     DebugMessage(M64MSG_ERROR, "reserved opcode: %" PRIX32 ":%" PRIX32, PCADDR, *fast_mem_access(r4300, PCADDR));
+ 
+-    cp0_regs[CP0_CAUSE_REG] = CP0_CAUSE_EXCCODE_RI;
++    cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00)) | CP0_CAUSE_EXCCODE_RI;
+     exception_general(r4300);
+ }
+ 
+@@ -131,7 +140,7 @@ DECLARE_INSTRUCTION(RESERVED_COP2)
+ 
+     if (check_cop2_unusable(r4300)) { return; }
+ 
+-    cp0_regs[CP0_CAUSE_REG] = CP0_CAUSE_EXCCODE_RI | CP0_CAUSE_CE2;
++    cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00)) | CP0_CAUSE_EXCCODE_RI | CP0_CAUSE_CE2;
+     exception_general(r4300);
+ }
+ 
+@@ -142,7 +151,7 @@ DECLARE_INSTRUCTION(BREAK)
+     DECLARE_R4300
+     uint32_t* cp0_regs = r4300_cp0_regs(&r4300->cp0);
+ 
+-    cp0_regs[CP0_CAUSE_REG] = CP0_CAUSE_EXCCODE_BP;
++    cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00)) | CP0_CAUSE_EXCCODE_BP;
+     exception_general(r4300);
+ }
+ 
+@@ -151,7 +160,7 @@ DECLARE_INSTRUCTION(BREAK)
+ DECLARE_INSTRUCTION(LB)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+     uint32_t value;
+@@ -165,7 +174,7 @@ DECLARE_INSTRUCTION(LB)
+ DECLARE_INSTRUCTION(LBU)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+     uint32_t value;
+@@ -179,7 +188,7 @@ DECLARE_INSTRUCTION(LBU)
+ DECLARE_INSTRUCTION(LH)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+     uint32_t value;
+@@ -193,7 +202,7 @@ DECLARE_INSTRUCTION(LH)
+ DECLARE_INSTRUCTION(LHU)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+     uint32_t value;
+@@ -207,7 +216,7 @@ DECLARE_INSTRUCTION(LHU)
+ DECLARE_INSTRUCTION(LL)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+     uint32_t value;
+@@ -221,7 +230,7 @@ DECLARE_INSTRUCTION(LL)
+ DECLARE_INSTRUCTION(LW)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+     uint32_t value;
+@@ -234,7 +243,7 @@ DECLARE_INSTRUCTION(LW)
+ DECLARE_INSTRUCTION(LWU)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -248,7 +257,7 @@ DECLARE_INSTRUCTION(LWU)
+ DECLARE_INSTRUCTION(LWL)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -265,7 +274,7 @@ DECLARE_INSTRUCTION(LWL)
+ DECLARE_INSTRUCTION(LWR)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -284,7 +293,7 @@ DECLARE_INSTRUCTION(LWR)
+ DECLARE_INSTRUCTION(LD)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -294,7 +303,7 @@ DECLARE_INSTRUCTION(LD)
+ DECLARE_INSTRUCTION(LDL)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -311,7 +320,7 @@ DECLARE_INSTRUCTION(LDL)
+ DECLARE_INSTRUCTION(LDR)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -332,7 +341,7 @@ DECLARE_INSTRUCTION(LDR)
+ DECLARE_INSTRUCTION(SB)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+     unsigned int shift = bshift(lsaddr);
+@@ -343,7 +352,7 @@ DECLARE_INSTRUCTION(SB)
+ DECLARE_INSTRUCTION(SH)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+     unsigned int shift = hshift(lsaddr);
+@@ -354,7 +363,7 @@ DECLARE_INSTRUCTION(SH)
+ DECLARE_INSTRUCTION(SC)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -374,7 +383,7 @@ DECLARE_INSTRUCTION(SC)
+ DECLARE_INSTRUCTION(SW)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -384,7 +393,7 @@ DECLARE_INSTRUCTION(SW)
+ DECLARE_INSTRUCTION(SWL)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -401,7 +410,7 @@ DECLARE_INSTRUCTION(SWL)
+ DECLARE_INSTRUCTION(SWR)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -416,17 +425,37 @@ DECLARE_INSTRUCTION(SWR)
+ DECLARE_INSTRUCTION(SD)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+     r4300_write_aligned_dword(r4300, lsaddr, (uint64_t)*lsrtp, ~UINT64_C(0));
+ }
+ 
++DECLARE_INSTRUCTION(LLD)
++{
++    DECLARE_R4300
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
++    int64_t *lsrtp = &irt;
++    ADD_TO_PC(1);
++    if (r4300_read_aligned_dword(r4300, lsaddr, (uint64_t*)lsrtp)) r4300->llbit = 1;
++}
++
++DECLARE_INSTRUCTION(SCD)
++{
++    DECLARE_R4300
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
++    int64_t *lsrtp = &irt;
++    ADD_TO_PC(1);
++    if (r4300->llbit) {
++        if (r4300_write_aligned_dword(r4300, lsaddr, (uint64_t)*lsrtp, ~UINT64_C(0))) { r4300->llbit = 0; *lsrtp = 1; }
++    } else *lsrtp = 0;
++}
++
+ DECLARE_INSTRUCTION(SDL)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -443,7 +472,7 @@ DECLARE_INSTRUCTION(SDL)
+ DECLARE_INSTRUCTION(SDR)
+ {
+     DECLARE_R4300
+-    const uint32_t lsaddr = (uint32_t) irs32 + (uint32_t) iimmediate;
++    const uint32_t lsaddr = R4300_XADDR(irs, iimmediate);
+     int64_t *lsrtp = &irt;
+     ADD_TO_PC(1);
+ 
+@@ -474,14 +503,14 @@ DECLARE_INSTRUCTION(ADDU)
+ DECLARE_INSTRUCTION(ADDI)
+ {
+     DECLARE_R4300
+-    irt = SE32((uint32_t) irs32 + (uint32_t) iimmediate);
++    irt = SE32(R4300_XADDR(irs, iimmediate));
+     ADD_TO_PC(1);
+ }
+ 
+ DECLARE_INSTRUCTION(ADDIU)
+ {
+     DECLARE_R4300
+-    irt = SE32((uint32_t) irs32 + (uint32_t) iimmediate);
++    irt = SE32(R4300_XADDR(irs, iimmediate));
+     ADD_TO_PC(1);
+ }
+ 
+@@ -1024,7 +1053,7 @@ DECLARE_INSTRUCTION(SYSCALL)
+     DECLARE_R4300
+     uint32_t* cp0_regs = r4300_cp0_regs(&r4300->cp0);
+ 
+-    cp0_regs[CP0_CAUSE_REG] = CP0_CAUSE_EXCCODE_SYS;
++    cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00)) | CP0_CAUSE_EXCCODE_SYS;
+     exception_general(r4300);
+ }
+ 
+@@ -1037,7 +1066,7 @@ DECLARE_INSTRUCTION(name) \
+     uint32_t* cp0_regs = r4300_cp0_regs(&r4300->cp0); \
+     if (cond) \
+     { \
+-        cp0_regs[CP0_CAUSE_REG] = CP0_CAUSE_EXCCODE_TR; \
++        cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00)) | CP0_CAUSE_EXCCODE_TR; \
+         exception_general(r4300); \
+     } \
+     else \
+@@ -1534,7 +1563,7 @@ DECLARE_INSTRUCTION(DCFC1)
+     /* Unimplemented Operation */
+     (*r4300_cp1_fcr31(&r4300->cp1)) |= FCR31_CAUSE_UNIMPLOP_BIT;
+ 
+-    cp0_regs[CP0_CAUSE_REG] = CP0_CAUSE_EXCCODE_FPE;
++    cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00)) | CP0_CAUSE_EXCCODE_FPE;
+     exception_general(r4300);
+ }
+ 
+@@ -1580,7 +1609,7 @@ DECLARE_INSTRUCTION(DCTC1)
+     /* Unimplemented Operation */
+     (*r4300_cp1_fcr31(&r4300->cp1)) |= FCR31_CAUSE_UNIMPLOP_BIT;
+ 
+-    cp0_regs[CP0_CAUSE_REG] = CP0_CAUSE_EXCCODE_FPE;
++    cp0_regs[CP0_CAUSE_REG] = (cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00)) | CP0_CAUSE_EXCCODE_FPE;
+     exception_general(r4300);
+ }
+ 
+diff --git a/src/device/r4300/pure_interp.c b/src/device/r4300/pure_interp.c
+index db5a596..d06af74 100644
+--- a/src/device/r4300/pure_interp.c
++++ b/src/device/r4300/pure_interp.c
+@@ -1,3 +1,6 @@
++#include <string.h>
++#include <stdlib.h>
++#include <stdio.h>
+ /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+  *   Mupen64plus - pure_interp.c                                           *
+  *   Mupen64Plus homepage: https://mupen64plus.org/                        *
+@@ -727,8 +730,7 @@ void InterpretOpcode(struct r4300_core* r4300)
+ 		else                NOP(r4300, 0);
+ 		break;
+ 	case 49: LWC1(r4300, op); break;
+-	case 52: /* Major opcode 52: LLD (Not implemented) */
+-		NI(r4300, op);
++	case 52: LLD(r4300, op);
+ 		break;
+ 	case 53: LDC1(r4300, op); break;
+ 	case 55: /* Major opcode 55: LD */
+@@ -740,8 +742,7 @@ void InterpretOpcode(struct r4300_core* r4300)
+ 		else                NOP(r4300, 0);
+ 		break;
+ 	case 57: SWC1(r4300, op); break;
+-	case 60: /* Major opcode 60: SCD (Not implemented) */
+-		NI(r4300, op);
++	case 60: SCD(r4300, op);
+ 		break;
+ 	case 61: SDC1(r4300, op); break;
+ 	case 63: SD(r4300, op); break;
+@@ -766,6 +767,12 @@ void run_pure_interpreter(struct r4300_core* r4300)
+ #ifdef DBG
+      if (g_DebuggerActive) update_debugger(*r4300_pc(r4300));
+ #endif
++     { static unsigned long long n; static uint32_t ring[1<<20]; static unsigned stopat = 1; static int done;
++       if (stopat == 1) { const char *e = getenv("M64STOP"); stopat = e ? strtoul(e, 0, 16) : 0; }
++       uint32_t pc = *r4300_pc(r4300); ring[n & ((1<<20)-1)] = pc;
++       if ((n & ((1ull<<24)-1)) == 0) fprintf(stderr, "PC %08x n=%llu\n", pc, n);
++       if (pc == stopat && done++ == (getenv("M64SKIP") ? atoi(getenv("M64SKIP")) : 0)) { FILE *f = fopen("pctrace.txt", "w"); for (unsigned i = 0; i < (1<<20); i++) fprintf(f, "%08x\n", ring[(n + 1 + i) & ((1<<20)-1)]); fclose(f); fprintf(stderr, "STOP hit n=%llu ra=%08x\n", n, (uint32_t)r4300_regs(r4300)[31]); const char *pk = getenv("M64PEEK"); if (pk) { uint32_t v = 0; r4300_read_aligned_word(r4300, strtoul(pk, 0, 16), &v); fprintf(stderr, "PEEK %s = %08x sr=%08x cause=%08x\n", pk, v, (uint32_t)r4300_cp0_regs(&r4300->cp0)[CP0_STATUS_REG], (uint32_t)r4300_cp0_regs(&r4300->cp0)[CP0_CAUSE_REG]); } }
++       n++; }
+      InterpretOpcode(r4300);
+    }
+ }
+diff --git a/src/device/r4300/r4300_core.c b/src/device/r4300/r4300_core.c
+index 76e9f50..a133717 100644
+--- a/src/device/r4300/r4300_core.c
++++ b/src/device/r4300/r4300_core.c
+@@ -20,6 +20,7 @@
+  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+ 
+ #include "r4300_core.h"
++#include "device/rcp/mi/mi_controller.h"
+ #include "cached_interp.h"
+ #if defined(COUNT_INSTR)
+ #include "instr_counters.h"
+@@ -399,6 +400,19 @@ int r4300_write_aligned_dword(struct r4300_core* r4300, uint32_t address, uint64
+     address &= UINT32_C(0x1ffffffc);
+ 
+     const struct mem_handler* handler = mem_get_handler(r4300->mem, address);
++    /* MI repeat mode: the next RDRAM write repeats the value over len bytes */
++    if ((r4300->mi->regs[MI_INIT_MODE_REG] & 0x80) && address < 0x03f00000) {
++        unsigned len = (r4300->mi->regs[MI_INIT_MODE_REG] & 0x7f) + 1;
++        for (unsigned i = 0; i < len; i += 4) {
++            uint32_t w = (i & 4) ? (uint32_t)value : (uint32_t)(value >> 32);
++            uint32_t m = len - i >= 4 ? ~UINT32_C(0) : ~UINT32_C(0) << (8 * (4 - (len - i)));
++            mem_write32(handler, address + i, w, m);
++        }
++        invalidate_r4300_cached_code(r4300, address | 0x80000000, len);
++        invalidate_r4300_cached_code(r4300, address | 0xa0000000, len);
++        r4300->mi->regs[MI_INIT_MODE_REG] &= ~0x80;
++        return 1;
++    }
+     mem_write32(handler, address + 0, value >> 32,      mask >> 32);
+     mem_write32(handler, address + 4, (uint32_t) value, (uint32_t) mask      );
+ 
+diff --git a/src/device/rcp/vi/vi_controller.c b/src/device/rcp/vi/vi_controller.c
+index b644fcd..8ddfc81 100644
+--- a/src/device/rcp/vi/vi_controller.c
++++ b/src/device/rcp/vi/vi_controller.c
+@@ -1,3 +1,6 @@
++#include <stdio.h>
++#include "device/r4300/r4300_core.h"
++#include "device/rcp/mi/mi_controller.h"
+ /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+  *   Mupen64plus - vi_controller.c                                         *
+  *   Mupen64Plus homepage: https://mupen64plus.org/                        *
+@@ -170,6 +173,7 @@ void vi_vertical_interrupt_event(void* opaque)
+ 
+     /* allow main module to do things on VI event */
+     new_vi();
++    { static int n; if ((n++ % 60) == 0) fprintf(stderr, "VI %d pc=%08x origin=%08x status=%08x\n", n, *r4300_pc(vi->mi->r4300), vi->regs[VI_ORIGIN_REG], vi->regs[VI_STATUS_REG]); }
+ 
+     /* toggle vi field if in interlaced mode */
+     vi->field ^= (vi->regs[VI_STATUS_REG] >> 6) & 0x1;

@@ -1,0 +1,31 @@
+# Your own Super Metroid ROM and everything built from it: never commit these.
+filesystem/*.smc
+filesystem/*.sfc
+*.smc
+*.sfc
+*.z64
+*.v64
+*.n64
+*.dfs
+build/
+build_check/
+
+# Emulator saves and save states (made with the ROM)
+*.ram
+*.srm
+*.sra
+*.eep
+*.bs[0-9]
+*.state
+
+# Local backups (some hold built ROMs)
+_backup*/
+
+# Pictures the PC tests render from ROM graphics
+tools/lowpoly/*.png
+*.ppm
+
+# Local tool state
+.claude/
+__pycache__/
+*.pyc

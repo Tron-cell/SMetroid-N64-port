@@ -1,0 +1,32 @@
+diff --git a/include/unicorn/mips.h b/include/unicorn/mips.h
+index 7a4c9c1..01c40bf 100644
+--- a/include/unicorn/mips.h
++++ b/include/unicorn/mips.h
+@@ -219,6 +219,8 @@ typedef enum UC_MIPS_REG {
+     UC_MIPS_REG_CP0_CONFIG3,
+     UC_MIPS_REG_CP0_USERLOCAL,
+     UC_MIPS_REG_CP0_STATUS,
++    UC_MIPS_REG_CP0_EPC,      // local patch
++    UC_MIPS_REG_CP0_BADVADDR, // local patch
+ 
+     // FCR(s) Ref:
+     // https://s3-eu-west-1.amazonaws.com/downloads-mips/documents/MD00083-2B-MIPS64INT-AFP-06.01.pdf
+diff --git a/qemu/target/mips/unicorn.c b/qemu/target/mips/unicorn.c
+index 7785265..19a936f 100644
+--- a/qemu/target/mips/unicorn.c
++++ b/qemu/target/mips/unicorn.c
+@@ -100,6 +100,14 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
+             CHECK_REG_TYPE(mipsreg_t);
+             *(mipsreg_t *)value = env->CP0_Status;
+             break;
++        case UC_MIPS_REG_CP0_EPC:
++            CHECK_REG_TYPE(mipsreg_t);
++            *(mipsreg_t *)value = env->CP0_EPC;
++            break;
++        case UC_MIPS_REG_CP0_BADVADDR:
++            CHECK_REG_TYPE(mipsreg_t);
++            *(mipsreg_t *)value = env->CP0_BadVAddr;
++            break;
+         case UC_MIPS_REG_CP0_USERLOCAL:
+             CHECK_REG_TYPE(mipsreg_t);
+             *(mipsreg_t *)value = env->active_tc.CP0_UserLocal;

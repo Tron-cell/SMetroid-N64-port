@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Super Metroid Sprite → Voxel (multi-frame)</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#0b0e14;--panel:#12151d;--line:#262b38;--text:#c9d3c9;--dim:#5f6a78;--accent:#ffd166;--green:#8ce68c}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg)}
+  body{font-family:'IBM Plex Mono',monospace;color:var(--text);font-size:12px}
+  #panel{position:fixed;top:12px;left:12px;width:250px;background:var(--panel);border:1px solid var(--line);
+    padding:12px 14px 14px;z-index:10;max-height:calc(100vh - 24px);overflow-y:auto}
+  #panel::-webkit-scrollbar{width:6px}#panel::-webkit-scrollbar-thumb{background:var(--line)}
+  h1{font-size:12px;margin:0 0 10px;color:var(--accent);letter-spacing:1px;font-weight:600}
+  h2{font-size:9px;color:var(--dim);margin:14px 0 6px;font-weight:600;letter-spacing:2px;
+     text-transform:uppercase;border-bottom:1px solid var(--line);padding-bottom:4px}
+  .row{display:flex;gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap}
+  .row>label{display:flex;gap:6px;align-items:center;flex:1;white-space:nowrap}
+  button{background:#1a1f29;border:1px solid var(--line);color:var(--text);padding:5px 10px;font:inherit;cursor:pointer}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  input[type=number]{width:48px;background:#0c0f16;border:1px solid var(--line);color:var(--text);
+    padding:3px 5px;font:inherit;text-align:center}
+  input[type=file]{font-size:10px;color:var(--dim);max-width:100%}
+  input[type=range]{flex:1;accent-color:var(--accent);min-width:60px}
+  .chk{display:flex;gap:8px;align-items:center;cursor:pointer;margin:6px 0}
+  .chk input{accent-color:var(--accent)}
+  .note{color:var(--dim);font-size:10px;line-height:1.5;margin:4px 0}
+  #frameLabel{min-width:56px;text-align:center;color:var(--accent)}
+  #status{margin-top:14px;color:var(--green);font-size:11px;line-height:1.6;min-height:32px;
+    border-top:1px solid var(--line);padding-top:10px}
+  #hint{color:#3d4654;font-size:9.5px;line-height:1.6;margin-top:8px}
+  #drop{position:fixed;inset:0;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;
+    color:var(--dim);font-size:15px;border:2px dashed #2a3040;pointer-events:none;background:rgba(11,14,20,.55);z-index:5}
+  #preview{position:fixed;top:12px;right:12px;z-index:10;background:#0c0f16;border:1px solid var(--line);
+    image-rendering:pixelated;display:none;width:96px;height:96px}
+  canvas.webgl{display:block;cursor:grab}
+</style>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
+</script>
+</head>
+<body>
+
+<div id="panel">
+  <h1>SM SPRITE → VOXEL</h1>
+
+  <div class="row"><input type="file" id="file" accept="image/*"></div>
+  <div class="row"><button id="demo" style="flex:1">Load demo — metroid, 4 frames</button></div>
+
+  <h2>Sheet grid</h2>
+  <div class="row">
+    <label>cols <input type="number" id="cols" min="1" max="64" value="1"></label>
+    <label>rows <input type="number" id="rows" min="1" max="64" value="1"></label>
+    <button id="slice">re-slice</button>
+  </div>
+  <div class="note" id="gridInfo">no sheet loaded</div>
+
+  <h2>Playback</h2>
+  <div class="row">
+    <button id="play" style="width:64px">pause</button>
+    <button id="prev">&lsaquo;</button>
+    <span id="frameLabel">&ndash; / &ndash;</span>
+    <button id="next">&rsaquo;</button>
+  </div>
+  <div class="row"><label>fps <input type="range" id="fps" min="1" max="24" value="10"><span id="fpsVal">10</span></label></div>
+
+  <h2>Voxel</h2>
+  <div class="row"><label>depth <input type="range" id="depth" min="0.1" max="4" step="0.1" value="1"><span id="depthVal">1.0</span></label></div>
+  <div class="row"><label>gap <input type="range" id="gap" min="0" max="0.4" step="0.02" value="0.04"><span id="gapVal">4%</span></label></div>
+  <div class="row"><label>alpha cutoff <input type="number" id="cut" min="1" max="255" value="128"></label></div>
+  <label class="chk"><input type="checkbox" id="keybg"> background colour is transparent</label>
+  <div class="note" id="bgInfo">for sheets without transparency (e.g. ROM dumps, where colour 0 fills empty space); ticked automatically when the sheet has no transparent pixels</div>
+
+  <h2>SNES palette</h2>
+  <label class="chk"><input type="checkbox" id="quant"> snap colors to 15-bit RGB555</label>
+  <div class="note" id="pal">unique colors: &ndash;</div>
+
+  <h2>Export</h2>
+  <div class="row"><button id="export" style="flex:1">Export .OBJ — one object per frame</button></div>
+  <label class="chk"><input type="checkbox" id="vcol" checked> vertex colors (v&nbsp;x&nbsp;y&nbsp;z&nbsp;r&nbsp;g&nbsp;b)</label>
+  <div class="note">vertex colors load in MeshLab &amp; Blender; uncheck for strict parsers</div>
+
+  <div id="status">drop a sprite sheet or load the demo</div>
+  <div id="hint">drag orbit &middot; wheel zoom &middot; space play/pause &middot; arrow keys step frames</div>
+</div>
+
+<div id="drop">drop a Super Metroid sprite sheet here<br>(transparent background required)</div>
+<canvas id="preview" width="96" height="96"></canvas>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ---------- scene ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0e14);
+const cam = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 4000);
+const rend = new THREE.WebGLRenderer({antialias:true});
+rend.setSize(innerWidth, innerHeight);
+rend.domElement.className = 'webgl';
+document.body.appendChild(rend.domElement);
+scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+const dl = new THREE.DirectionalLight(0xffffff, 1.6); dl.position.set(60,140,200); scene.add(dl);
+
+// ---------- orbit ----------
+let th=0.7, ph=1.2, dist=120, drag=false, lx=0, ly=0;
+rend.domElement.addEventListener('pointerdown',e=>{drag=true;lx=e.clientX;ly=e.clientY;
+  rend.domElement.style.cursor='grabbing';});
+addEventListener('pointerup',()=>{drag=false;rend.domElement.style.cursor='grab';});
+addEventListener('pointermove',e=>{ if(!drag)return;
+  th+=(e.clientX-lx)*0.01; ph=Math.max(0.15,Math.min(1.55,ph-(e.clientY-ly)*0.01));
+  lx=e.clientX; ly=e.clientY; updCam(); });
+addEventListener('wheel',e=>{dist=Math.min(2000,Math.max(10,dist*(1+e.deltaY*0.001)));updCam();});
+function updCam(){ cam.position.set(dist*Math.sin(ph)*Math.cos(th),dist*Math.cos(ph),dist*Math.sin(ph)*Math.sin(th));
+  cam.lookAt(0,0,0); }
+updCam();
+
+const $=id=>document.getElementById(id);
+
+// ---------- state ----------
+let sheet=null;          // ImageData of the whole spritesheet (after the background key, if on)
+let sheetSrc=null;       // the sheet as loaded
+let frames=[];           // {w,h, raw:[{x,y,c}], pix:[{x,y,c}], mesh|null}
+let cur=0, playing=true, fps=10, acc=0;
+const boxGeo=new THREE.BoxGeometry(1,1,1);
+const tmpM=new THREE.Matrix4(), tmpC=new THREE.Color();
+
+// SNES 15-bit: 5 bits/channel, stored back with the 31-step round-trip
+const snap555=c=>{ const q=v=>Math.round((v>>3)*255/31);
+  return (q((c>>16)&255)<<16)|(q((c>>8)&255)<<8)|q(c&255); };
+
+function setStatus(t){ $('status').textContent=t; }
+
+// ---------- frame build / rebuild ----------
+function clearFrames(){
+  for(const f of frames) if(f.mesh){ scene.remove(f.mesh); f.mesh.material.dispose(); f.mesh.dispose(); f.mesh=null; }
+  frames=[]; cur=0;
+}
+function applyPix(){
+  const q=$('quant').checked;
+  for(const f of frames)
+    f.pix = q ? f.raw.map(p=>({x:p.x,y:p.y,c:snap555(p.c)})) : f.raw.map(p=>({x:p.x,y:p.y,c:p.c}));
+}
+function rebuildAll(){
+  for(const f of frames) if(f.mesh){ scene.remove(f.mesh); f.mesh.material.dispose(); f.mesh.dispose(); f.mesh=null; }
+  const depth=+$('depth').value, s=1-+$('gap').value;
+  for(const f of frames){
+    const n=f.pix.length; if(!n){ f.mesh=null; continue; }
+    const m=new THREE.InstancedMesh(boxGeo, new THREE.MeshLambertMaterial(), n);
+    for(let i=0;i<n;i++){
+      const p=f.pix[i];
+      tmpM.makeScale(s,s,depth);
+      tmpM.setPosition(p.x-f.w/2+0.5, f.h/2-p.y-0.5, 0);
+      m.setMatrixAt(i,tmpM);
+      m.setColorAt(i,tmpC.setHex(p.c));
+    }
+    m.instanceMatrix.needsUpdate=true;
+    if(m.instanceColor) m.instanceColor.needsUpdate=true;
+    m.visible=false; scene.add(m); f.mesh=m;
+  }
+  showFrame(cur);
+  updatePalInfo();
+}
+function showFrame(i){
+  if(!frames.length){ $('frameLabel').textContent='– / –'; return; }
+  cur=((i%frames.length)+frames.length)%frames.length;
+  frames.forEach((f,k)=>{ if(f.mesh) f.mesh.visible=(k===cur); });
+  $('frameLabel').textContent=(cur+1)+' / '+frames.length;
+  drawPreview();
+}
+function updatePalInfo(){
+  const set=new Set();
+  for(const f of frames) for(const p of f.pix) set.add(p.c);
+  const n=set.size;
+  $('pal').textContent = frames.length
+    ? 'unique colors: '+n+(n<=16?' — fits one 16-color sprite palette':' — spans multiple subpalettes')
+    : 'unique colors: –';
+}
+function fitCamera(){
+  let m=16; for(const f of frames) m=Math.max(m,f.w,f.h);
+  dist=Math.min(600,Math.max(16,m*2.3)); updCam();
+}
+
+// ---------- 2D preview (sanity check for the slice) ----------
+const pctx=$('preview').getContext('2d');
+function drawPreview(){
+  pctx.clearRect(0,0,96,96);
+  const f=frames[cur]; if(!f)return;
+  const sp=Math.max(1,Math.floor(88/Math.max(f.w,f.h)));
+  const ox=(96-f.w*sp)/2, oy=(96-f.h*sp)/2;
+  for(const p of f.pix){
+    pctx.fillStyle='#'+p.c.toString(16).padStart(6,'0');
+    pctx.fillRect(Math.round(ox+p.x*sp), Math.round(oy+p.y*sp), sp, sp);
+  }
+}
+
+// ---------- grid auto-detection ----------
+function detectGrid(){
+  const w=sheet.width, h=sheet.height, d=sheet.data;
+  const colE=new Array(w).fill(true), rowE=new Array(h).fill(true);
+  for(let y=0,i=0;y<h;y++)for(let x=0;x<w;x++,i+=4)
+    if(d[i+3]>8){ colE[x]=false; rowE[y]=false; }
+  const seg=(empty,n)=>{                 // smallest uniform cell size with fully empty separators
+    for(let s=8;s<n;s++){
+      if(n%s) continue;
+      const k=n/s; if(k<2||k>64) continue;
+      let ok=true;
+      for(let b=1;b<k&&ok;b++) if(!empty[b*s]) ok=false;
+      if(ok) return s;
+    }
+    return n;
+  };
+  return {cols:w/seg(colE,w), rows:h/seg(rowE,h)};
+}
+
+// ---------- slicing ----------
+function slice(cols,rows){
+  if(!sheet){ setStatus('load a sheet first'); return; }
+  cols=Math.max(1,Math.min(64,Math.round(cols)||1));
+  rows=Math.max(1,Math.min(64,Math.round(rows)||1));
+  clearFrames();
+  const d=sheet.data, sw=sheet.width, sh=sheet.height;
+  const fw=Math.max(1,Math.floor(sw/cols)), fh=Math.max(1,Math.floor(sh/rows));
+  const cut=+$('cut').value||128;
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const x0=c*fw, y0=r*fh, raw=[];
+    const x1=Math.min(x0+fw,sw), y1=Math.min(y0+fh,sh);
+    for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){
+      const i=(y*sw+x)*4;
+      if(d[i+3]>cut) raw.push({x:x-x0, y:y-y0, c:(d[i]<<16)|(d[i+1]<<8)|d[i+2]});
+    }
+    if(raw.length) frames.push({w:fw,h:fh,raw});
+  }
+  applyPix(); rebuildAll();
+  playing=frames.length>1; updatePlayBtn();
+  showFrame(0); fitCamera();
+  const tot=frames.reduce((s,f)=>s+f.raw.length,0);
+  $('gridInfo').textContent='grid '+cols+' × '+rows+' · cell '+fw+'×'+fh+' px';
+  setStatus(frames.length+' frame'+(frames.length===1?'':'s')+' · '+tot+' voxels');
+  $('drop').style.display='none'; $('preview').style.display='block';
+}
+function ingestSheet(runDetect){
+  if(!sheet) return;
+  let cols=1, rows=1;
+  if(runDetect){
+    const g=detectGrid(); cols=g.cols; rows=g.rows;
+    $('gridInfo').textContent='auto-detected '+cols+' × '+rows+' grid (tweak & re-slice if wrong)';
+  } else { cols=+$('cols').value||1; rows=+$('rows').value||1; }
+  $('cols').value=cols; $('rows').value=rows;
+  slice(cols,rows);
+}
+
+// ---------- image ingestion ----------
+function ingestImage(img){
+  let w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
+  const cv=document.createElement('canvas');
+  if(Math.max(w,h)>1024){
+    const k=1024/Math.max(w,h);
+    cv.width=Math.round(w*k); cv.height=Math.round(h*k);
+    const c=cv.getContext('2d'); c.imageSmoothingEnabled=true; c.drawImage(img,0,0,cv.width,cv.height);
+  } else {
+    cv.width=w; cv.height=h;
+    const c=cv.getContext('2d'); c.imageSmoothingEnabled=false; c.drawImage(img,0,0);
+  }
+  sheetSrc=cv.getContext('2d').getImageData(0,0,cv.width,cv.height);
+  let clear=false; for(let i=3;i<sheetSrc.data.length;i+=4) if(sheetSrc.data[i]<=8){ clear=true; break; }
+  $('keybg').checked=!clear;          // no transparency at all: the background is a colour
+  sheet=keyed();
+  setStatus('sheet loaded: '+cv.width+'×'+cv.height+' px');
+  ingestSheet(true);
+}
+
+// ---------- background key: the sheet's most common colour becomes transparent ----------
+function bgColour(img){
+  const n=new Map(), d=img.data; let best=-1, bn=0;
+  for(let i=0;i<d.length;i+=4){ if(d[i+3]<=8) continue;
+    const c=(d[i]<<16)|(d[i+1]<<8)|d[i+2], k=(n.get(c)||0)+1; n.set(c,k); if(k>bn){ bn=k; best=c; } }
+  return best;
+}
+function keyed(){
+  if(!sheetSrc) return null;
+  if(!$('keybg').checked){ $('bgInfo').textContent='background: as in the picture (transparent pixels only)'; return sheetSrc; }
+  const bg=bgColour(sheetSrc);
+  const out=new ImageData(new Uint8ClampedArray(sheetSrc.data), sheetSrc.width, sheetSrc.height), d=out.data;
+  let k=0;
+  for(let i=0;i<d.length;i+=4) if(((d[i]<<16)|(d[i+1]<<8)|d[i+2])===bg){ d[i+3]=0; k++; }
+  $('bgInfo').textContent='background #'+bg.toString(16).padStart(6,'0')+' made transparent ('+k+' px)';
+  return out;
+}
+$('file').addEventListener('change',()=>{
+  const f=$('file').files[0]; if(!f)return;
+  const img=new Image(); img.onload=()=>ingestImage(img);
+  img.src=URL.createObjectURL(f);
+});
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{ e.preventDefault();
+  const f=e.dataTransfer.files[0];
+  if(f&&f.type.startsWith('image/')){
+    const img=new Image(); img.onload=()=>ingestImage(img);
+    img.src=URL.createObjectURL(f);
+  }});
+
+// ---------- demo: procedural 4-frame metroid ----------
+$('demo').onclick=()=>{
+  const W=26,H=24,N=4;
+  const cv=document.createElement('canvas'); cv.width=W*N; cv.height=H;
+  const ctx=cv.getContext('2d');
+  const cx=(W-1)/2, cy=(H-1)/2, R=10.5;
+  for(let f=0;f<N;f++){
+    const ph=f/N*Math.PI*2;
+    const nx=cx+Math.cos(ph)*1.5, ny=cy+Math.sin(ph*2)*1.1;   // wobbling nucleus
+    const hx=nx-1.5, hy=ny-1.5;                               // fixed highlight on nucleus
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+      const r=Math.hypot(x-cx,y-cy); if(r>R) continue;
+      const nr=Math.hypot(x-nx,y-ny);
+      let col;
+      if(nr<4.4){ const hr=Math.hypot(x-hx,y-hy);
+        col = hr<1.7?'#ffe9c4':(nr>3.5?'#d96b2b':'#ff8a3d'); }
+      else col = r>9.2?'#2f5228':(r>6.6?'#436f37':'#9ccf7f');
+      ctx.fillStyle=col; ctx.fillRect(f*W+x,y,1,1);
+    }
+    [[-7.5,2.4],[-3,3.0],[3,3.0],[7.5,2.4]].forEach(([off,base])=>{  // fangs, length pulses
+      const fx=Math.round(cx+off);
+      const yb=cy+Math.sqrt(Math.max(0,R*R-off*off))-1;
+      const len=Math.round(base+(f%2)*1.2);
+      for(let t=0;t<len;t++){
+        ctx.fillStyle = t===0?'#436f37':'#9ccf7f';
+        ctx.fillRect(f*W+fx, Math.round(yb+t),1,1);
+      }
+    });
+  }
+  sheetSrc=ctx.getImageData(0,0,cv.width,cv.height);
+  $('keybg').checked=false; sheet=keyed();
+  setStatus('demo: metroid · 4-frame nucleus wobble + fang pulse');
+  ingestSheet(true);
+};
+
+// ---------- playback ----------
+function updatePlayBtn(){ $('play').textContent=playing?'pause':'play'; }
+function togglePlay(){ if(frames.length<2)return; playing=!playing; acc=0; updatePlayBtn(); }
+$('play').onclick=togglePlay;
+$('prev').onclick=()=>showFrame(cur-1);
+$('next').onclick=()=>showFrame(cur+1);
+$('fps').addEventListener('input',()=>{ fps=+$('fps').value; $('fpsVal').textContent=fps; });
+
+// ---------- voxel controls ----------
+$('depth').addEventListener('input',()=>{ $('depthVal').textContent=(+$('depth').value).toFixed(1); rebuildAll(); });
+$('gap').addEventListener('input',()=>{ $('gapVal').textContent=Math.round(+$('gap').value*100)+'%'; rebuildAll(); });
+$('cut').addEventListener('change',()=>ingestSheet(false));
+$('keybg').addEventListener('change',()=>{ sheet=keyed(); ingestSheet(false); });
+$('quant').addEventListener('change',()=>{ applyPix(); rebuildAll(); });
+$('slice').onclick=()=>ingestSheet(false);
+
+// ---------- OBJ export: one object per frame, correct outward winding ----------
+const FACES=[[4,3,2,1],[1,2,3,4],[2,3,7,6],[1,5,8,4],[4,8,7,3],[1,2,6,5]];
+$('export').onclick=()=>{
+  if(!frames.length){ setStatus('nothing to export'); return; }
+  const depth=+$('depth').value, gap=+$('gap').value, half=(1-gap)/2, hd=depth/2;
+  const vcol=$('vcol').checked;
+  let out='# Super Metroid sprite -> voxel OBJ\n'
+        +'# frames: '+frames.length+' (one object each, laid out in a row)\n'
+        +'# extrusion depth '+depth+' / gap '+Math.round(gap*100)+'% / palette '
+        +($('quant').checked?'SNES RGB555 snap':'raw RGBA')+'\n';
+  const span=frames.reduce((m,f)=>Math.max(m,f.w),0)+3;
+  frames.forEach((f,fi)=>{
+    out+='o sm_frame_'+String(fi).padStart(3,'0')+'\n';
+    const ox=(fi-(frames.length-1)/2)*span;
+    let base=1;
+    for(const p of f.pix){
+      const x=p.x-f.w/2+0.5+ox, y=f.h/2-p.y-0.5;
+      const pts=[[x-half,y-half,-hd],[x+half,y-half,-hd],[x+half,y+half,-hd],[x-half,y+half,-hd],
+                 [x-half,y-half, hd],[x+half,y-half, hd],[x+half,y+half, hd],[x-half,y+half, hd]];
+      let cr=0,cg=0,cb=0;
+      if(vcol){ cr=((p.c>>16)&255)/255; cg=((p.c>>8)&255)/255; cb=(p.c&255)/255; }
+      for(const q of pts){
+        out+='v '+q[0].toFixed(3)+' '+q[1].toFixed(3)+' '+q[2].toFixed(3);
+        if(vcol) out+=' '+cr.toFixed(4)+' '+cg.toFixed(4)+' '+cb.toFixed(4);
+        out+='\n';
+      }
+      for(const face of FACES)
+        out+='f '+(face[0]+base)+' '+(face[1]+base)+' '+(face[2]+base)+' '+(face[3]+base)+'\n';
+      base+=8;
+    }
+  });
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([out],{type:'text/plain'}));
+  a.download='spritesheet_voxels.obj'; a.click();
+  setStatus('exported '+frames.length+' OBJ objects'+(vcol?' with vertex colors':''));
+};
+
+// ---------- keyboard ----------
+addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT') return;
+  if(e.code==='Space'){ e.preventDefault(); togglePlay(); }
+  else if(e.code==='ArrowRight'){ e.preventDefault(); showFrame(cur+1); }
+  else if(e.code==='ArrowLeft'){ e.preventDefault(); showFrame(cur-1); }
+});
+
+// ---------- render loop ----------
+const clock=new THREE.Clock();
+(function loop(){
+  requestAnimationFrame(loop);
+  const dt=clock.getDelta();
+  if(playing && frames.length>1){
+    acc+=dt; const spf=1/fps;
+    while(acc>spf){ acc-=spf; showFrame(cur+1); }
+  }
+  rend.render(scene,cam);
+})();
+
+addEventListener('resize',()=>{
+  cam.aspect=innerWidth/innerHeight; cam.updateProjectionMatrix();
+  rend.setSize(innerWidth,innerHeight);
+});
+
+// initial label values
+$('depthVal').textContent=(+$('depth').value).toFixed(1);
+$('gapVal').textContent=Math.round(+$('gap').value*100)+'%';
+</script>
+</body>
+</html>

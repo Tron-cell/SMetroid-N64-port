@@ -1,0 +1,77 @@
+diff --git a/module.c b/module.c
+index 80ea4d7..710d552 100644
+--- a/module.c
++++ b/module.c
+@@ -630,10 +630,8 @@ NOINLINE void message(const char* body)
+     system(argv);
+     free(argv);
+ #else
+-    fputs(body, stdout);
+-    putchar('\n');
+-    puts("Press ENTER to return.");
+-    getchar();
++    fputs(body, stderr);  /* local patch: never block on stdin */
++    fputc('\n', stderr);
+ #endif
+     return;
+ }
+diff --git a/su.c b/su.c
+index 02f101c..c7f1495 100644
+--- a/su.c
++++ b/su.c
+@@ -212,6 +212,8 @@ MT_CMD_START       ,MT_CMD_END         ,MT_READ_ONLY       ,MT_CMD_STATUS,
+ MT_CMD_CLOCK       ,MT_READ_ONLY       ,MT_READ_ONLY       ,MT_READ_ONLY
+ };
+ 
++unsigned long long g_rsp_instr, g_rsp_dma_count, g_rsp_dma_bytes;  /* local patch: counters */
++unsigned long long g_rsp_pc_hist[1024];
+ void SP_DMA_READ(void)
+ {
+     unsigned int offC, offD; /* SP cache and dynamic DMA pointers */
+@@ -227,6 +229,7 @@ void SP_DMA_READ(void)
+ #endif
+     ++length;
+     ++count;
++    g_rsp_dma_count++; g_rsp_dma_bytes += (unsigned long long)length * count;  /* local patch */
+     skip += length;
+     do {
+         register unsigned int i;
+@@ -266,6 +269,7 @@ void SP_DMA_WRITE(void)
+ #endif
+     ++length;
+     ++count;
++    g_rsp_dma_count++; g_rsp_dma_bytes += (unsigned long long)length * count;  /* local patch */
+     skip += length;
+     do {
+         register unsigned int i;
+@@ -1516,8 +1520,12 @@ void SQV(unsigned vt, unsigned element, signed offset, unsigned base)
+         *(pi16)(DMEM + addr + HES(0x00C)) = VR[vt][03];
+         *(pi16)(DMEM + addr + HES(0x00E)) = VR[vt][04];
+         break;
+-    default:
+-        message("SQV\nWeird addr.");
++    default: {  /* local patch: general case (hardware stores up to the 16-byte boundary) */
++        register unsigned int i;
++        addr |= b;
++        for (i = 0; i < 16 - addr%16; i++)
++            DMEM[BES((addr + i) & 0xFFF)] = VR_B(vt, i & 0xF);
++    }
+     }
+     return;
+ }
+@@ -1959,6 +1967,7 @@ NOINLINE void run_task(void)
+     PC = FIT_IMEM(GET_RCP_REG(SP_PC_REG));
+     for (;;) {
+         inst_word = *(pi32)(IMEM + FIT_IMEM(PC));
++        g_rsp_instr++; g_rsp_pc_hist[FIT_IMEM(PC) >> 2]++;  /* local patch */
+ #ifdef EMULATE_STATIC_PC
+         PC = (PC + 0x004);
+ EX:
+@@ -2085,6 +2094,7 @@ EX:
+         continue;
+ set_branch_delay:
+         inst_word = *(pi32)(IMEM + FIT_IMEM(PC));
++        g_rsp_instr++; g_rsp_pc_hist[FIT_IMEM(PC) >> 2]++;  /* local patch */
+         PC = FIT_IMEM(temp_PC);
+         goto EX;
+ #endif
