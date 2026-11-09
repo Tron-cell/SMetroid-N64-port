@@ -1,9 +1,9 @@
 # Super Metroid 64: N64 port
 
-This folder holds the snesrev/sm game code (Super Metroid rewritten in C, upstream
-commit in `SNESREV\\\\\\\_COMMIT`) plus a new libdragon platform layer that replaces the
-PC version's SDL2 code. It is milestone 3 from `../NOTES.md`: running the real game
-logic on the N64.
+This repository holds the snesrev/sm game code (Super Metroid rewritten in C,
+upstream commit in `SNESREV_COMMIT`) plus a new libdragon platform layer that
+replaces the PC version's SDL2 code, so the real game logic runs natively on the
+Nintendo 64. No game data is included: you build it with your own ROM.
 
 ## Status
 
@@ -19,15 +19,15 @@ logic on the N64.
 |**Speed**|**RSP renderer done; real-hardware FPS not measured yet (see below)**|
 
 The picture is now drawn by the N64's RSP (vector coprocessor) while the CPU
-runs the next frame. Please send the numbers from the top border overlay.
+runs the next frame. The top border overlay shows where the time goes (see Overlay).
 
 ## Build
 
 You need your own Super Metroid (Japan/USA) ROM, SHA-1
 `da957f0d63d14cb441d215462904c4fa8519c613`, no copier header.
 
-1. Copy it to `filesystem/sm.smc`. It is already there if Claude copied it in.
-2. In the shell you use for libdragon, with `N64\\\\\\\_INST` set:
+1. Copy it to `filesystem/sm.smc`.
+2. In the shell you use for libdragon, with `N64_INST` set:
 
 make
 
@@ -45,9 +45,9 @@ use UNFLoader `-d` on the EverDrive, or the ares console.
 
 ### If your SDK is older
 
-`sram\\\\\\\_init`, `sram\\\\\\\_detect`, `sram\\\\\\\_read` and `sram\\\\\\\_write` are libdragon *preview* APIs
-from 2025-2026. If they're missing, remove the four `sram\\\\\\\_` calls in
-`src/platform/n64/n64\\\\\\\_main.c`. The game still runs, but saves won't persist.
+`sram_init`, `sram_detect`, `sram_read` and `sram_write` are libdragon *preview* APIs
+from 2025-2026. If they're missing, remove the four `sram_` calls in
+`src/platform/n64/n64_main.c`. The game still runs, but saves won't persist.
 
 ## Controls (controller 1)
 
@@ -68,27 +68,27 @@ from 2025-2026. If they're missing, remove the four `sram\\\\\\\_` calls in
 
 ## What I changed from upstream
 
-* `src/platform/n64/n64\\\\\\\_main.c` is new and replaces `main.c`: video, input,
+* `src/platform/n64/n64_main.c` is new and replaces `main.c`: video, input,
 audio, SRAM, PAL timing and the error screen.
-* `src/platform/n64/n64\\\\\\\_glue.c` is new: accessors into the emulated SNES state.
+* `src/platform/n64/n64_glue.c` is new: accessors into the emulated SNES state.
 * `snes/ppu.c`: pixels are packed as N64 RGBA (`PIX` macro).
-* `snes/cart.c` and `snes/snes\\\\\\\_other.c`: the ROM is loaded in place, with no extra
+* `snes/cart.c` and `snes/snes_other.c`: the ROM is loaded in place, with no extra
 4 MB copies.
-* `sm\\\\\\\_cpu\\\\\\\_infra.c`: runs only the C game code (`RM\\\\\\\_MINE`). The PC build also runs
+* `sm_cpu_infra.c`: runs only the C game code (`RM_MINE`). The PC build also runs
 the original 65816 code side by side to compare, which is far too slow here.
-* `sm\\\\\\\_rtl.c`: SRAM goes to the platform layer.
+* `sm_rtl.c`: SRAM goes to the platform layer.
 * `config.h`: SDL is compiled out.
-* `Makefile`: compiles everything as C++ (game code with `SM\\\\\\\_LE\\\\\\\_TYPES`), and
-renames `cart\\\\\\\_init`, `dma\\\\\\\_read` and `dma\\\\\\\_write` because libdragon uses the same names.
+* `Makefile`: compiles everything as C++ (game code with `SM_LE_TYPES`), and
+renames `cart_init`, `dma_read` and `dma_write` because libdragon uses the same names.
 * `types.h`: the `LeInt` byte-order-safe integer types, and `memcpy` -> `memmove` (N64 only).
-* `sm\\\\\\\_cpu\\\\\\\_infra.c`: the PC-only comparison snapshots (600 KB) are allocated on
+* `sm_cpu_infra.c`: the PC-only comparison snapshots (600 KB) are allocated on
 demand, so they cost nothing on N64.
-* Small C++-compatibility edits across `sm\\\\\\\_\\\\\\\*.c` (a `+` before some values in
+* Small C++-compatibility edits across `sm_*.c` (a `+` before some values in
 `?:` expressions, split declarations before `goto` labels). See "How the
 byte-order fix works".
 
 Every change is behind `#ifdef N64`, so the files still build for PC.
-`n64\\\\\\\_changes.patch` lists every change to the upstream files.
+`n64_changes.patch` lists every change to the upstream files.
 
 ## How the byte-order fix works
 
@@ -103,7 +103,7 @@ types (`LeInt` in `src/types.h`). They always store bytes in SNES
 (little-endian) order with 1-byte alignment, and convert to normal integers in
 expressions. So every access in the game code means exactly what it meant on a PC,
 on any CPU. The SNES hardware code (`src/snes/`) keeps native types. All of this
-is only active in the N64 build (`SM\\\\\\\_LE\\\\\\\_TYPES`); the PC build is unchanged C.
+is only active in the N64 build (`SM_LE_TYPES`); the PC build is unchanged C.
 
 Other fixes found by testing:
 
@@ -116,7 +116,7 @@ That only worked on PC because glibc's `memcpy` happens to behave like
 
 ## How it was verified
 
-`tools/be\\\\\\\_rig/` runs the game code on an emulated big-endian MIPS VR4300 (the
+`tools/be_rig/` runs the game code on an emulated big-endian MIPS VR4300 (the
 Unicorn engine, with the same compiler and flags as the ROM). It traps unaligned
 accesses exactly like the N64 does and compares every frame against the original
 PC build. Each frame it fingerprints all of game RAM, save RAM, VRAM, palette,
@@ -132,7 +132,7 @@ sprite table, the rendered picture and the audio output.
 Not yet covered: Zebes beyond the demos, most bosses, saving and loading. The
 wrapper approach fixes the game code generally, not path by path, so remaining
 risk is mainly in native-typed code. The rig can test any new route: add
-button events to `tools/be\\\\\\\_rig/play\\\\\\\_script.h`.
+button events to `tools/be_rig/play_script.h`.
 
 ## Speed and the RSP renderer
 
@@ -141,19 +141,19 @@ The rig counts executed MIPS instructions. The N64's CPU manages roughly
 
 |Version|CPU instructions per game frame (gameplay)|
 |-|-|
-|First byte-order build|\~9.9M + 0.9M audio|
-|Per-scanline clock loop + aligned line clears|\~7.8M + 0.9M audio|
-|**RSP renderer** (CPU only records what each line needs)|**\~1.4M + 0.9M audio** (max 1.6M + audio)|
+|First byte-order build|~9.9M + 0.9M audio|
+|Per-scanline clock loop + aligned line clears|~7.8M + 0.9M audio|
+|**RSP renderer** (CPU only records what each line needs)|**~1.4M + 0.9M audio** (max 1.6M + audio)|
 
 ### How it works
 
-1. While the game runs a frame, `ppu\\\\\\\_runLine` no longer draws. `src/snes/ppu\\\\\\\_rsp.c`
+1. While the game runs a frame, `ppu_runLine` no longer draws. `src/snes/ppu_rsp.c`
 records each line's PPU state (64 bytes: scroll, tilemap rows, windows,
 colour math, brightness), the visible sprite rows (8 bytes each, already
 flipped, with the 32-sprite / 34-tile limits of the real SNES), palette
 snapshots, and the 33 tiles each background layer needs for its current tile
 row (one block per 8 lines). At the end of the frame it copies VRAM.
-2. The RSP microcode `src/platform/n64/rsp\\\\\\\_ppu.S` draws mode 1 (BG1/BG2 4bpp,
+2. The RSP microcode `src/platform/n64/rsp_ppu.S` draws mode 1 (BG1/BG2 4bpp,
 BG3 2bpp, sprites, both windows, colour math, half/add/subtract, brightness)
 eight pixels per vector instruction and DMAs each finished line into the
 framebuffer as RGBA5551.
@@ -167,8 +167,8 @@ the RSP runs at 62.5 MHz, about 1.04M cycles per 1/60 s):
 
 |Job|Average|Worst sampled|
 |-|-|-|
-|Picture (`rsp\\\\\\\_ppu.S`), 336 sampled frames|8.4 ms|17.3 ms|
-|Sound (`rsp\\\\\\\_dsp.S`), per logic step|4.1 ms|5.4 ms|
+|Picture (`rsp_ppu.S`), 336 sampled frames|8.4 ms|17.3 ms|
+|Sound (`rsp_dsp.S`), per logic step|4.1 ms|5.4 ms|
 
 Sound moved to the RSP too: the CPU runs the SPC driver and logs DSP register
 writes; the RSP replays them and renders the samples (bit-exact with dsp.c).
@@ -178,7 +178,7 @@ The CPU now needs about 0.63M instructions per logic step.
 
 * C reference renderer vs the original PPU code, on the big-endian rig: 0
 different lines over 50,000 frames (6.5M lines), and game state unchanged.
-* RSP microcode vs C reference (`tools/rsp\\\\\\\_test`): 0 different lines over
+* RSP microcode vs C reference (`tools/rsp_test`): 0 different lines over
 336 sampled frames (55,000 lines).
 * Whole ROM in a headless N64 emulator (`tools/n64emu`, with a test build that
 compares each shown frame against the C reference): 0 different lines over
@@ -212,7 +212,7 @@ VRAM / OAM / CGRAM DMA copy whole words (two per 32-bit load on big-endian),
 PPU register writes skip the generic bus decoder, the scanline loop runs each
 line in one call and HDMA only visits live channels, and the functions called
 hundreds of times per frame (register writes, DMA, HDMA) are placed together
-at the start of the code (`SNES\\\\\\\_HOT`) so they stop evicting each other from
+at the start of the code (`SNES_HOT`) so they stop evicting each other from
 the 16 KB instruction cache.
 
 RSP waiting time (W), before / after the RSP pass, busy attract-demo rooms:
@@ -224,7 +224,7 @@ decodes bit planes: about 21 instead of 30 cycles per two tiles.
 * Repeated lines are copied, not drawn. A line whose record, palette, sprite
 rows and BG data (tilemap entry and tile-page write generation of each of
 its 34 columns, or the mode 7 row's key) all equal the previous frame's gets
-kLR\_Copy, and the RSP copies its 512 bytes from the previous framebuffer.
+`kLR_Copy`, and the RSP copies its 512 bytes from the previous framebuffer.
 The status bar and anything that doesn't move qualify; in normal gameplay
 about half of all lines. A fingerprint taken at capture time keeps the
 check cheap when lines change. The rig verifies every copied line against
@@ -237,7 +237,7 @@ background effect is currently left out of the build, `FX25D 0` in
 `n64_main.c`, because it glitched when the screen changes.)
 
 On by default during gameplay; L + C-up switches it off and on. The original
-art is kept. After the picture, a third RSP microcode, `rsp\\\\\\\_fx.S`, changes:
+art is kept. After the picture, a third RSP microcode, `rsp_fx.S`, changes:
 
 * Level blocks (BG1): a 1-pixel bevel. Edge pixels get half their colour; on
 the top and left edges also +12 per channel, so blocks look lit from the
@@ -247,10 +247,10 @@ the backdrop): a soft drop shadow, 22% darker for each of the three pixels
 up-left of it, (x-1, y-1), (x-2, y-2), (x-3, y-3), that belong to a block
 or a sprite (so up to 66% darker, fading out at the shadow's edge).
 
-How: while drawing, `rsp\\\\\\\_ppu.S` also writes each line's 256 z values (which
+How: while drawing, `rsp_ppu.S` also writes each line's 256 z values (which
 layer won each pixel) to a mask image in RDRAM. In rooms where the main screen
 only shows the BG3 fog / water layer and the level is on the sub screen, it
-takes the sub screen's z values there. `rsp\\\\\\\_fx.S` keeps the last five mask
+takes the sub screen's z values there. `rsp_fx.S` keeps the last five mask
 rows (y-3 .. y+1) in DMEM, converted to one word per pixel so the pixel loop
 needs no compares (31 vector instructions per 8 pixels, two groups
 interleaved and software-pipelined so the vector unit doesn't stall), and
@@ -259,7 +259,7 @@ frame is shown, as a third stage chained from the SP interrupt.
 
 Lines it leaves alone: the HUD (top 32 rows), black and mode 7 lines,
 anything outside gameplay (title, menus, map, intro). A line copied from the
-previous frame (kLR\_Copy, see above) already has the effect, so the CPU only
+previous frame (`kLR_Copy`, see above) already has the effect, so the CPU only
 lets it be copied when rows y-3 .. y+1 are unchanged too, and switching the
 effect re-draws everything once.
 
@@ -289,7 +289,7 @@ rate), which most CRTs and many TVs and upscalers accept. Because some don't,
 the switch is on trial: the top border shows "60 Hz: press A to keep it" with
 a countdown, and without A it goes back to 50 Hz after 10 seconds. R + C-up
 again returns to 50 Hz. NTSC consoles are 60 Hz already. To start in 60 Hz
-every time, build with `make TEST\\\\\\\_FLAGS=-DFORCE\\\\\\\_PAL60` (no confirmation).
+every time, build with `make TEST_FLAGS=-DFORCE_PAL60` (no confirmation).
 
 The game always runs at its own 60 steps per second; at 60 Hz that is one
 step per picture, so motion is smoother. A picture now has 16.7 ms instead
@@ -310,11 +310,11 @@ do) and runs slowly in both modes, as before.
 
 What changed:
 
-* Mode 7 rows on the RSP (`rsp\\\\\\\_m7.S`, new). Ceres' rooms are mode 7 without
-rotation or scaling; the CPU spent \~3,600 cycles per line building their
+* Mode 7 rows on the RSP (`rsp_m7.S`, new). Ceres' rooms are mode 7 without
+rotation or scaling; the CPU spent ~3,600 cycles per line building their
 BG1 rows (7 ms a frame). It now only lists those lines (plane row and first
 column); a new microcode, run before the picture, fetches the 33 tiles of
-each tile row once by DMA and builds the rows (\~800 RSP cycles per line).
+each tile row once by DMA and builds the rows (~800 RSP cycles per line).
 Rotated or scaled mode 7 lines are still built by the CPU.
 * Capture: a line whose PPU registers are the same as the previous line's
 (no write to them in between, apart from scroll registers) starts from a
@@ -335,8 +335,8 @@ reuse the previous line's mask rows without searching (about 8% faster).
 Verified like the earlier passes: the capture vs the original renderer on
 50,000 frames (0 different lines, emulation unchanged, 0 wrong copies), the
 big-endian rig (3,300 frames match), the in-emulator self-check (0 bad
-lines), `rsp\\\\\\\_m7` against its C model (16 random cases, 0 different rows)
-and, in the emulator, every row `rsp\\\\\\\_m7` built in the run above against the
+lines), `rsp_m7` against its C model (16 random cases, 0 different rows)
+and, in the emulator, every row `rsp_m7` built in the run above against the
 same window of the plane worked out by the CPU (490,000 rows, 0 different).
 
 ### Low-poly 3D characters
@@ -518,13 +518,13 @@ platforms) and intangible objects keep their sprites, and bosses drawn on a
 background layer stay as they are.
 
 How: the game's draw routines report the player and each enemy instead of
-writing their sprites (`sm\\\\\\\_90.c`, `sm\\\\\\\_a0.c`). After the RSP has finished a
+writing their sprites (`sm_90.c`, `sm_a0.c`). After the RSP has finished a
 frame's picture, `platform/n64/lowpoly.c` transforms the models (one matrix
 per limb, block data prepared once), sorts their blocks back to front and
 writes an RDP command list in two small buffers used in turn, while the RSP
 already works on the next frame. Rows a model covered are never copied into
 the next frame. The models themselves are generated tables
-(`lowpoly\\\\\\\_models.h`). To build without the feature: `make TEST\\\\\\\_FLAGS=-DLOWPOLY=0`.
+(`lowpoly_models.h`). To build without the feature: `make TEST_FLAGS=-DLOWPOLY=0`.
 
 To make room for the models in memory, a frame now holds up to 3,072 sprite
 slivers instead of 4,096 (about 2,400 was the most seen; a frame with more
@@ -548,20 +548,20 @@ edge-on (under 1.5 square pixels) are skipped, and the models were trimmed to
 
 Checked in ares with the angrylion reference RDP linked in (the headless
 runner draws with it when `ANGRYLION=1`): Kestrel in all poses through the
-autoplay run, and, with `TEST\\\\\\\_FLAGS=-DLP\\\\\\\_TEST\\\\\\\_FAKE` (adds two Burrowdrakes and
+autoplay run, and, with `TEST_FLAGS=-DLP_TEST_FAKE` (adds two Burrowdrakes and
 two shapes beside the player, since the autoplay route meets no regular
 enemies), both Burrowdrake colours and the shapes.
 
 ### Speed pass: rain and fog rooms
 
-Two places you reported as slow at 60 Hz: the landing site in the rain
+Two places reported as slow at 60 Hz: the landing site in the rain
 (Crateria, right after leaving the ship) and the Morph Ball room in Brinstar
 (the security eye's searchlight). Both have a BG3 layer (rain, fog) added to
 the whole picture with colour math, and it changes every frame, so no line can
 be copied from the previous frame and the RSP draws all 224 lines.
 
 Measured in ares (NTSC, Expansion Pak), about a minute in each room, loading
-your save (slot A) and standing / walking (`TEST\\\\\\\_FLAGS="-DAUTOPLAY -DAUTOPLAY\\\\\\\_FILE"`,
+your save (slot A) and standing / walking (`TEST_FLAGS="-DAUTOPLAY -DAUTOPLAY_FILE"`,
 see Testing below):
 
 |Room|FPS before|FPS after|RSP sound + picture per frame, before / after|
@@ -577,13 +577,13 @@ more over half a second) and pictures come slower than the TV rate, it is
 switched off for that room; the room is remembered for the rest of the
 session. In lighter rooms it stays on. L + C-up still switches it by hand
 (pressing it in a room where it went off automatically turns it back on there).
-* **Sound microcode (`rsp\\\\\\\_dsp.S`), about 26% less RSP time.** The per-sample
+* **Sound microcode (`rsp_dsp.S`), about 26% less RSP time.** The per-sample
 loop is rescheduled so the scalar unit (echo buffer, FIR ring, sample
 gathers) and the vector unit (interpolation, envelopes, FIR, mixing) work in
 parallel, and BRR decoding picks its filter code once per block and clamps
 with one test instead of two branches. Same output: 0 different samples
 against `dsp.c` over 59,000 steps (attract demos, new game, both rooms).
-* **Picture microcode (`rsp\\\\\\\_ppu.S`), 2-4% less.** The next line's first BG
+* **Picture microcode (`rsp_ppu.S`), 2-4% less.** The next line's first BG
 layer is fetched while the current line is composed, a line doesn't wait for
 the previous line's output to leave DMEM unless it needs that buffer, and
 lines without sprites skip clearing the sprite line.
@@ -607,13 +607,13 @@ included; sound as above.
 
 ### Testing in the two rooms
 
-* `make TEST\\\\\\\_FLAGS="-DAUTOPLAY -DAUTOPLAY\\\\\\\_FILE"`: loads save slot A at
-power-on (`src/platform/n64/autoplay\\\\\\\_file.h`) and walks left and right.
+* `make TEST_FLAGS="-DAUTOPLAY -DAUTOPLAY_FILE"`: loads save slot A at
+power-on (`src/platform/n64/autoplay_file.h`) and walks left and right.
 * The headless ares runner takes a save file: `SRAM=<file.ram>`. Slot A's
 load station decides the room (area 0 station 0: landing site; area 1
 station 9: Morph Ball room, the elevator from Crateria).
-* The rig (`tools/be\\\\\\\_rig`) has the same as script 3 (`RIG\\\\\\\_SRAM=<file>`).
-* `TEST\\\\\\\_FLAGS=-DCAPSTAT` prints where the capture time goes (tile blocks,
+* The rig (`tools/be_rig`) has the same as script 3 (`RIG_SRAM=<file>`).
+* `TEST_FLAGS=-DCAPSTAT` prints where the capture time goes (tile blocks,
 sprites, HDMA) once a second.
 
 ### What's left
