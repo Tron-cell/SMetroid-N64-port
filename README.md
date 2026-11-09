@@ -628,3 +628,18 @@ RSP time there. The 2.5D look switches itself off in such rooms.
 * Half-colour math and brightness fades with subtraction use a slower general
 path on the RSP (not seen in the sampled frames).
 
+
+## Licence
+
+* **This port's own code** (the N64 platform layer, the RSP microcodes, the
+  low-poly 2.5D characters, the tools and all changes to the game code):
+  Copyright (c) 2026 Tron-cell, licensed under the **GNU General Public
+  License v3.0** (`LICENSE`). You may use, change and share it; anything you
+  distribute that includes it must also be released under the GPL v3.
+* **The original snesrev/sm code** this is built on (and the Opus code it
+  includes) stays under its own MIT / BSD licences: `LICENSE_snesrev.txt`.
+  Those permissive licences allow it to be part of a GPL v3 project; their
+  notices must be kept.
+* **No game data is included.** Super Metroid, its graphics, sound and ROM
+  belong to Nintendo and are not covered by either licence. You need your own
+  ROM to build (`filesystem/sm.smc`).
