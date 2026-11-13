@@ -710,6 +710,7 @@ static void N64Menu(surface_t *src) {
   N64Cfg undo = g_cfg;
   int page = kPageMain, sel = kMainButtons;
   surface_t *last = src;
+  int shown_secs = -2;                   // the countdown second on screen (-1: none)
   uint32_t white = graphics_make_color(255, 255, 255, 255), grey = graphics_make_color(150, 160, 190, 255);
   uint32_t panel = graphics_make_color(8, 12, 40, 255), edge = graphics_make_color(90, 110, 200, 255);
   uint32_t hilite = graphics_make_color(40, 60, 140, 255), gold = graphics_make_color(255, 210, 90, 255);
@@ -746,10 +747,30 @@ static void N64Menu(surface_t *src) {
       if ((ok && sel == kColBack) || p.b) page = kPageMain, sel = kMainColours;
     }
     if (p.start) done = save = true;     // Start: save and exit, from any page
+    uint64_t hz_before = g_hz_deadline;
     if (g_hz_deadline) {                 // 60 Hz on trial: A keeps it (also in here), else back to 50 Hz
       if (p.a) g_hz_deadline = 0;
       else if (get_ticks_us() > g_hz_deadline) ToggleRefresh();
     }
+
+    // A new picture only when something changed (a button, the stick, the 60 Hz
+    // countdown): otherwise the last one stays on screen untouched. Redrawing the
+    // whole screen every frame made the panel flicker.
+    int secs = g_hz_deadline ? (int)((g_hz_deadline - get_ticks_us()) / 1000000) : -1;
+    bool dirty = last == src || p.raw || dx || dy || g_hz_deadline != hz_before || secs != shown_secs;
+    if (!dirty && !done) {
+#if ENABLE_AUDIO
+      if (audio_can_write()) {           // (the game is paused: silence)
+        int16_t *out = audio_write_begin();
+        memset(out, 0, audio_get_buffer_length() * 4);
+        audio_write_end();
+      }
+#endif
+      vi_wait_vblank();
+      continue;
+    }
+    if (done) break;
+    shown_secs = secs;
 
     // the picture behind it, then the panel
     surface_t *fb = display_get();
